@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PostureAware — Session Summary</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161921;
+    --surface2: #1e2230;
+    --border: #2a2f3e;
+    --accent: #4f8ef7;
+    --accent2: #7c5af5;
+    --good: #22c55e;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --text: #e8eaf0;
+    --muted: #8892a4;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 40px 24px;
+  }
+
+  .container { max-width: 760px; margin: 0 auto; }
+
+  .page-header { text-align: center; margin-bottom: 40px; }
+  .check-icon {
+    width: 64px;
+    height: 64px;
+    background: rgba(34,197,94,0.12);
+    border: 2px solid rgba(34,197,94,0.3);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    margin: 0 auto 16px;
+  }
+  .page-header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  .page-header p { color: var(--muted); font-size: 14px; }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .card-full { grid-column: span 2; }
+
+  .card-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Big metric */
+  .big-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  .big-metric {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .big-metric .val {
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+  .big-metric .lbl { font-size: 11px; color: var(--muted); line-height: 1.4; }
+  .color-good { color: var(--good); }
+  .color-warn { color: var(--warn); }
+  .color-bad  { color: var(--bad); }
+  .color-accent { color: var(--accent); }
+
+  /* Subscale bars */
+  .subscale-row {
+    margin-bottom: 14px;
+  }
+  .subscale-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    margin-bottom: 6px;
+  }
+  .subscale-name { color: var(--text); font-weight: 500; }
+  .subscale-val  { font-weight: 600; }
+  .bar-bg {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 4px;
+  }
+
+  /* Data export box */
+  .data-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.8;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .data-box .key { color: var(--accent); }
+  .data-box .val { color: var(--text); }
+
+  /* Condition badge */
+  .cond-badge {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  .cond-immediate { background: rgba(245,158,11,0.12); color: var(--warn); border: 1px solid rgba(245,158,11,0.3); }
+  .cond-adaptive  { background: rgba(79,142,247,0.12); color: var(--accent); border: 1px solid rgba(79,142,247,0.3); }
+
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .info-row:last-child { border-bottom: none; }
+  .info-row .k { color: var(--muted); }
+  .info-row .v { font-weight: 500; }
+
+  .new-session-btn {
+    display: block;
+    width: 100%;
+    margin-top: 24px;
+    padding: 14px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border: none;
+    border-radius: 10px;
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    text-align: center;
+    cursor: pointer;
+    text-decoration: none;
+    transition: opacity 0.15s;
+  }
+  .new-session-btn:hover { opacity: 0.9; }
+
+  .saved-note {
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 16px;
+  }
+  .saved-note strong { color: var(--good); }
+
+  @media (max-width: 600px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .card-full { grid-column: span 1; }
+    .big-metrics { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="page-header">
+    <div class="check-icon">✓</div>
+    <h1>Session Complete</h1>
+    <p>Thank you for participating. Your data has been saved.</p>
+  </div>
+
+  <div class="grid-2">
+
+    <!-- Session Info -->
+    <div class="card">
+      <div class="card-title">Session Details</div>
+      <span class="cond-badge {{ 'cond-immediate' if summary.condition == 'immediate' else 'cond-adaptive' }}">
+        {{ 'Immediate Feedback' if summary.condition == 'immediate' else 'Adaptive Delayed Feedback' }}
+      </span>
+      <div class="info-row"><span class="k">Participant ID</span><span class="v">{{ summary.participant_id }}</span></div>
+      <div class="info-row"><span class="k">Duration</span><span class="v">{{ (summary.session_duration_s // 60) | int }}m {{ (summary.session_duration_s % 60) | int }}s</span></div>
+      {% if summary.age %}<div class="info-row"><span class="k">Age</span><span class="v">{{ summary.age }}</span></div>{% endif %}
+      {% if summary.gender %}<div class="info-row"><span class="k">Gender</span><span class="v">{{ summary.gender }}</span></div>{% endif %}
+    </div>
+
+    <!-- Objective Metrics -->
+    <div class="card">
+      <div class="card-title">Objective Measures</div>
+      <div class="big-metrics" style="grid-template-columns:1fr 1fr;">
+        <div class="big-metric">
+          <div class="val color-warn">{{ summary.total_alerts }}</div>
+          <div class="lbl">Total Alerts Generated</div>
+        </div>
+        <div class="big-metric">
+          <div class="val {% if summary.pct_time_poor_posture < 30 %}color-good{% elif summary.pct_time_poor_posture < 60 %}color-warn{% else %}color-bad{% endif %}">
+            {{ summary.pct_time_poor_posture }}%
+          </div>
+          <div class="lbl">Time in Poor Posture</div>
+        </div>
+        <div class="big-metric">
+          <div class="val color-accent">{{ summary.avg_latency_s if summary.avg_latency_s else '—' }}</div>
+          <div class="lbl">Avg Correction Latency (s)</div>
+        </div>
+        <div class="big-metric">
+          <div class="val color-bad">{{ summary.ignored_alerts }}</div>
+          <div class="lbl">Alerts Ignored</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Subjective Scores (if questionnaire submitted) -->
+    {% if summary.questionnaire %}
+    <div class="card card-full">
+      <div class="card-title">Subjective Measures (1–7 scale)</div>
+      <div>
+        {% set q = summary.questionnaire %}
+        {% set subscales = [
+          ('Helpfulness', q.score_helpfulness, '#22c55e'),
+          ('Annoyance (lower = better)', q.score_annoyance, '#ef4444'),
+          ('Usability', q.score_usability, '#4f8ef7'),
+          ('Willingness to Use', q.score_willingness, '#7c5af5')
+        ] %}
+        {% for name, score, color in subscales %}
+        <div class="subscale-row">
+          <div class="subscale-header">
+            <span class="subscale-name">{{ name }}</span>
+            <span class="subscale-val" style="color:{{ color }}">{{ score }} / 7</span>
+          </div>
+          <div class="bar-bg">
+            <div class="bar-fill" style="width:{{ (score/7*100)|int }}%;background:{{ color }};"></div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Raw Data Preview -->
+    <div class="card card-full">
+      <div class="card-title">Exported Data Summary</div>
+      <div class="data-box">
+        <span class="key">participant_id:    </span><span class="val">{{ summary.participant_id }}</span><br>
+        <span class="key">condition:         </span><span class="val">{{ summary.condition }}</span><br>
+        <span class="key">session_duration_s:</span><span class="val"> {{ summary.session_duration_s }}</span><br>
+        <span class="key">total_alerts:      </span><span class="val"> {{ summary.total_alerts }}</span><br>
+        <span class="key">ignored_alerts:    </span><span class="val"> {{ summary.ignored_alerts }}</span><br>
+        <span class="key">total_poor_s:      </span><span class="val"> {{ summary.total_poor_posture_s }}</span><br>
+        <span class="key">pct_poor:          </span><span class="val"> {{ summary.pct_time_poor_posture }}%</span><br>
+        <span class="key">avg_latency_s:     </span><span class="val"> {{ summary.avg_latency_s }}</span><br>
+        <span class="key">median_latency_s:  </span><span class="val"> {{ summary.median_latency_s }}</span><br>
+        <span class="key">final_delay_thresh:</span><span class="val"> {{ summary.final_delay_threshold }}</span><br>
+        <span class="key">latencies:         </span><span class="val"> {{ summary.response_latencies }}</span>
+        {% if summary.questionnaire %}
+        <br><span class="key">helpfulness:       </span><span class="val"> {{ summary.questionnaire.score_helpfulness }}</span>
+        <br><span class="key">annoyance:         </span><span class="val"> {{ summary.questionnaire.score_annoyance }}</span>
+        <br><span class="key">usability:         </span><span class="val"> {{ summary.questionnaire.score_usability }}</span>
+        <br><span class="key">willingness:       </span><span class="val"> {{ summary.questionnaire.score_willingness }}</span>
+        {% endif %}
+      </div>
+      <p class="saved-note" style="margin-top:10px;">
+        <strong>✓ Data saved</strong> to <code>data/</code> folder as CSV + JSON
+      </p>
+    </div>
+
+  </div>
+
+  <a href="/" class="new-session-btn">← Start New Session</a>
+  <p class="saved-note">The researcher can find per-participant CSV and JSON files in the <code>data/</code> directory.</p>
+
+</div>
+</body>
+</html>

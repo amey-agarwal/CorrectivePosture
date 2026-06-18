@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PostureAware — Study Portal</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161921;
+    --surface2: #1e2230;
+    --border: #2a2f3e;
+    --accent: #4f8ef7;
+    --accent2: #7c5af5;
+    --good: #22c55e;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --text: #e8eaf0;
+    --muted: #8892a4;
+    --radius: 12px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 560px;
+  }
+
+  .logo {
+    text-align: center;
+    margin-bottom: 40px;
+  }
+  .logo-icon {
+    width: 56px;
+    height: 56px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 16px;
+    margin: 0 auto 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+  }
+  .logo h1 {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+  .logo p {
+    color: var(--muted);
+    font-size: 14px;
+    margin-top: 6px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px;
+  }
+
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+
+  .form-group {
+    margin-bottom: 20px;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  input, select {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px 14px;
+    color: var(--text);
+    font-size: 15px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input:focus, select:focus {
+    border-color: var(--accent);
+  }
+  select option { background: var(--surface2); }
+
+  .condition-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .condition-card {
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .condition-card:hover {
+    border-color: var(--accent);
+    background: rgba(79,142,247,0.05);
+  }
+  .condition-card.selected {
+    border-color: var(--accent);
+    background: rgba(79,142,247,0.1);
+  }
+  .condition-card input[type=radio] {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .condition-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    display: inline-block;
+  }
+  .badge-immediate { background: rgba(245,158,11,0.15); color: var(--warn); }
+  .badge-adaptive  { background: rgba(79,142,247,0.15); color: var(--accent); }
+  .condition-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .condition-card p  { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 24px 0;
+  }
+
+  .info-box {
+    background: rgba(79,142,247,0.08);
+    border: 1px solid rgba(79,142,247,0.2);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.6;
+    margin-bottom: 24px;
+  }
+  .info-box strong { color: var(--accent); }
+
+  .btn {
+    width: 100%;
+    padding: 14px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border: none;
+    border-radius: 10px;
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+  .btn:hover { opacity: 0.9; }
+  .btn:active { transform: scale(0.99); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .error-msg {
+    color: var(--bad);
+    font-size: 13px;
+    margin-top: 12px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="logo">
+    <div class="logo-icon">🧍</div>
+    <h1>PostureAware</h1>
+    <p>Adaptive Feedback Study — Participant Portal</p>
+  </div>
+
+  <div class="card">
+    <p class="section-label">Participant Registration</p>
+
+    <div class="form-group">
+      <label>Participant ID</label>
+      <input type="text" id="pid" placeholder="e.g. P01" autocomplete="off">
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+      <div class="form-group">
+        <label>Age</label>
+        <input type="number" id="age" placeholder="e.g. 24" min="16" max="80">
+      </div>
+      <div class="form-group">
+        <label>Gender</label>
+        <select id="gender">
+          <option value="">Select…</option>
+          <option>Male</option>
+          <option>Female</option>
+          <option>Non-binary</option>
+          <option>Prefer not to say</option>
+        </select>
+      </div>
+    </div>
+
+    <hr class="divider">
+    <p class="section-label">Study Condition</p>
+
+    <div class="condition-grid">
+      <label class="condition-card" id="card-immediate">
+        <input type="radio" name="condition" value="immediate" onchange="selectCondition('immediate')">
+        <span class="condition-badge badge-immediate">Baseline</span>
+        <h3>Immediate Feedback</h3>
+        <p>Alerts fire as soon as poor posture is detected (1 s grace).</p>
+      </label>
+      <label class="condition-card" id="card-adaptive">
+        <input type="radio" name="condition" value="adaptive" onchange="selectCondition('adaptive')">
+        <span class="condition-badge badge-adaptive">Adaptive</span>
+        <h3>Adaptive Delayed</h3>
+        <p>Alert timing adjusts based on your prior response behaviour.</p>
+      </label>
+    </div>
+
+    <div class="info-box">
+      <strong>What to expect:</strong> The study runs for <strong>30 minutes</strong>. Please sit naturally in front of your webcam and perform your usual computer work. Your posture will be monitored continuously. After the session a short questionnaire will follow.
+    </div>
+
+    <button class="btn" onclick="startSession()" id="startBtn">
+      Begin Session →
+    </button>
+    <p class="error-msg" id="errMsg">Please fill in all fields and choose a condition.</p>
+  </div>
+</div>
+
+<script>
+  let selectedCondition = null;
+
+  function selectCondition(c) {
+    selectedCondition = c;
+    document.querySelectorAll('.condition-card').forEach(el => el.classList.remove('selected'));
+    document.getElementById('card-' + c).classList.add('selected');
+  }
+
+  async function startSession() {
+    const pid = document.getElementById('pid').value.trim();
+    const age = document.getElementById('age').value.trim();
+    const gender = document.getElementById('gender').value;
+
+    if (!pid || !age || !gender || !selectedCondition) {
+      document.getElementById('errMsg').style.display = 'block';
+      return;
+    }
+
+    const btn = document.getElementById('startBtn');
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+
+    const resp = await fetch('/api/start_session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ participant_id: pid, condition: selectedCondition, age, gender })
+    });
+    const data = await resp.json();
+    window.location.href = '/monitor/' + data.session_id;
+  }
+</script>
+</body>
+</html>

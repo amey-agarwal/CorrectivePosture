@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PostureAware — Live Session</title>
+<script src="https://socket.io"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161921;
+    --surface2: #1e2230;
+    --border: #2a2f3e;
+    --accent: #4f8ef7;
+    --accent2: #7c5af5;
+    --good: #22c55e;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --text: #e8eaf0;
+    --muted: #8892a4;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    height: 100vh;
+    display: grid;
+    grid-template-rows: 56px 1fr;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+    z-index: 10;
+  }
+  .header-logo { font-size: 18px; font-weight: 700; }
+  .header-badge {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 20px;
+  }
+  .badge-immediate { background: rgba(245,158,11,0.15); color: var(--warn); }
+  .badge-adaptive  { background: rgba(79,142,247,0.15); color: var(--accent); }
+
+  .header-pid { font-size: 13px; color: var(--muted); }
+  .header-spacer { flex: 1; }
+
+  .timer-display {
+    font-family: 'Courier New', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: 2px;
+  }
+  .timer-label { font-size: 11px; color: var(--muted); margin-right: 4px; }
+
+  .end-btn {
+    padding: 8px 18px;
+    background: rgba(239,68,68,0.12);
+    border: 1px solid rgba(239,68,68,0.3);
+    border-radius: 8px;
+    color: var(--bad);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .end-btn:hover { background: rgba(239,68,68,0.2); }
+
+  /* ── Main layout ── */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 0;
+    overflow: hidden;
+  }
+
+  /* ── Camera panel ── */
+  .camera-panel {
+    position: relative;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .camera-feed {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  /* ── Posture status overlay (top of camera) ── */
+  .posture-overlay {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(13,15,20,0.82);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 8px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.3s;
+  }
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    transition: background 0.3s;
+  }
+  .status-dot.good { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .status-dot.bad  { background: var(--bad);  box-shadow: 0 0 8px var(--bad);  animation: pulse 1s infinite; }
+  .status-dot.unknown { background: var(--muted); }
+  @keyframes pulse {
+    0%,100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ── ALERT OVERLAY ── */
+  .alert-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(239,68,68,0.08);
+    border: 3px solid var(--bad);
+    border-radius: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s;
+    z-index: 5;
+  }
+  .alert-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+    animation: borderPulse 1.5s infinite;
+  }
+  @keyframes borderPulse {
+    0%,100% { border-color: var(--bad); box-shadow: inset 0 0 30px rgba(239,68,68,0.1); }
+    50% { border-color: #ff7070; box-shadow: inset 0 0 60px rgba(239,68,68,0.25); }
+  }
+
+  .alert-card {
+    background: rgba(13,15,20,0.92);
+    backdrop-filter: blur(12px);
+    border: 2px solid var(--bad);
+    border-radius: 16px;
+    padding: 28px 36px;
+    text-align: center;
+    max-width: 360px;
+  }
+  .alert-icon { font-size: 40px; margin-bottom: 12px; }
+  .alert-title { font-size: 20px; font-weight: 700; color: var(--bad); margin-bottom: 8px; }
+  .alert-subtitle { font-size: 14px; color: var(--muted); line-height: 1.5; }
+  .alert-tips {
+    margin-top: 14px;
+    text-align: left;
+    background: rgba(239,68,68,0.07);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .alert-tips p {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 5px;
+    padding-left: 16px;
+    position: relative;
+  }
+  .alert-tips p::before { content: '→'; position: absolute; left: 0; color: var(--bad); }
+  .alert-tips p:last-child { margin-bottom: 0; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .widget {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .widget-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+
+  /* Posture score ring */
+  .score-ring-wrap {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .score-ring {
+    width: 72px;
+    height: 72px;
+    flex-shrink: 0;
+  }
+  .score-text {
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .score-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  /* Metric bars */
+  .metric-row {
+    margin-bottom: 10px;
+  }
+  .metric-row:last-child { margin-bottom: 0; }
+  .metric-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    margin-bottom: 5px;
+  }
+  .metric-name { color: var(--muted); }
+  .metric-val  { font-weight: 600; }
+  .metric-bar-bg {
+    height: 5px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .metric-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s, background 0.3s;
+  }
+
+  /* Stat grid */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .stat-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .stat-val {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .stat-lbl { font-size: 11px; color: var(--muted); line-height: 1.3; }
+
+  /* Delay indicator (adaptive only) */
+  .delay-widget { display: none; }
+  .delay-bar-bg {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 8px 0 6px;
+  }
+  .delay-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 4px;
+    transition: width 0.5s;
+  }
+  .delay-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .delay-current {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 2px;
+  }
+  .delay-unit { font-size: 12px; color: var(--muted); }
+
+  /* History list */
+  .history-list {
+    max-height: 140px;
+    overflow-y: auto;
+  }
+  .history-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .history-item:last-child { border-bottom: none; }
+  .history-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot-corrected { background: var(--good); }
+  .dot-ignored   { background: var(--bad); }
+  .history-latency { margin-left: auto; color: var(--muted); font-size: 11px; }
+
+  /* Study progress bar */
+  .progress-section { margin-bottom: 4px; }
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    margin-bottom: 6px;
+    color: var(--muted);
+  }
+  .progress-bar-bg {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 3px;
+    transition: width 1s linear;
+  }
+
+  /* No-camera message */
+  .no-cam {
+    position: absolute;
+    color: var(--muted);
+    font-size: 14px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <span class="header-logo">🧍 PostureAware</span>
+  <span class="header-badge {{ 'badge-immediate' if session.condition == 'immediate' else 'badge-adaptive' }}">
+    {{ 'Immediate' if session.condition == 'immediate' else 'Adaptive' }}
+  </span>
+  <span class="header-pid">{{ session.participant_id }}</span>
+  <div class="header-spacer"></div>
+  <span class="timer-label">SESSION</span>
+  <span class="timer-display" id="timerDisplay">00:00</span>
+  <button class="end-btn" onclick="endSession()">End Session</button>
+</header>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Camera Panel -->
+  <div class="camera-panel">
+    <img class="camera-feed" src="/video_feed/{{ session_id }}" id="camFeed"
+         onerror="document.getElementById('noCamera').style.display='block'">
+
+    <!-- Status pill -->
+    <div class="posture-overlay" id="postureOverlay">
+      <div class="status-dot unknown" id="statusDot"></div>
+      <span id="statusText">Detecting…</span>
+    </div>
+
+    <!-- Alert overlay -->
+    <div class="alert-overlay" id="alertOverlay">
+      <div class="alert-card">
+        <div class="alert-icon">⚠️</div>
+        <div class="alert-title">Adjust Your Posture</div>
+        <div class="alert-subtitle">Poor posture detected. Please correct your sitting position.</div>
+        <div class="alert-tips" id="alertTips">
+          <p>Sit up straight, back against chair</p>
+          <p>Chin parallel to the floor</p>
+          <p>Shoulders relaxed and level</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="no-cam" id="noCamera" style="display:none;">
+      <p>📷</p><p>Camera not accessible.<br>Ensure webcam permissions are granted.</p>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+
+    <!-- Study Progress -->
+    <div class="widget">
+      <div class="widget-title">Study Progress</div>
+      <div class="progress-section">
+        <div class="progress-header">
+          <span>Elapsed</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progressBar" style="width:0%"></div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px;">
+        Target: <strong>30 minutes</strong>
+      </div>
+    </div>
+
+    <!-- Posture Score -->
+    <div class="widget">
+      <div class="widget-title">Posture Score</div>
+      <div class="score-ring-wrap">
+        <svg class="score-ring" viewBox="0 0 72 72">
+          <circle cx="36" cy="36" r="30" fill="none" stroke="#2a2f3e" stroke-width="6"/>
+          <circle cx="36" cy="36" r="30" fill="none" stroke="#4f8ef7" stroke-width="6"
+                  stroke-linecap="round"
+                  stroke-dasharray="188.5"
+                  stroke-dashoffset="188.5"
+                  id="scoreRingFill"
+                  transform="rotate(-90 36 36)"
+                  style="transition:stroke-dashoffset 0.4s,stroke 0.4s"/>
+        </svg>
+        <div>
+          <div class="score-text" id="scoreText">—</div>
+          <div class="score-label" id="scoreLabel">Waiting for data</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="widget">
+      <div class="widget-title">Posture Metrics</div>
+      <div class="metric-row">
+        <div class="metric-header">
+          <span class="metric-name">Forward Head Angle</span>
+          <span class="metric-val" id="fhaVal">—°</span>
+        </div>
+        <div class="metric-bar-bg">
+          <div class="metric-bar-fill" id="fhaBar" style="width:0%"></div>
+        </div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-header">
+          <span class="metric-name">Shoulder Tilt</span>
+          <span class="metric-val" id="shVal">—°</span>
+        </div>
+        <div class="metric-bar-bg">
+          <div class="metric-bar-fill" id="shBar" style="width:0%"></div>
+        </div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-header">
+          <span class="metric-name">Torso Inclination</span>
+          <span class="metric-val" id="torsoVal">—°</span>
+        </div>
+        <div class="metric-bar-bg">
+          <div class="metric-bar-fill" id="torsoBar" style="width:0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Adaptive Delay (shown only for adaptive condition) -->
+    {% if session.condition == 'adaptive' %}
+    <div class="widget delay-widget" id="delayWidget" style="display:block;">
+      <div class="widget-title">Adaptive Delay Threshold</div>
+      <div>
+        <span class="delay-current" id="delayVal">5.0</span>
+        <span class="delay-unit">seconds</span>
+      </div>
+      <div class="delay-bar-bg">
+        <div class="delay-bar-fill" id="delayBar" style="width:25%"></div>
+      </div>
+      <div class="delay-labels">
+        <span>2s (frequent)</span>
+        <span>20s (relaxed)</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+        Adjusts based on your correction speed
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Session Stats -->
+    <div class="widget">
+      <div class="widget-title">Session Stats</div>
+      <div class="stat-grid">
+        <div class="stat-box">
+          <div class="stat-val" id="totalAlerts">0</div>
+          <div class="stat-lbl">Alerts Sent</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" id="avgLatency">—</div>
+          <div class="stat-lbl">Avg Correction (s)</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" id="poorDuration">0s</div>
+          <div class="stat-lbl">Poor Posture Time</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" id="ignoredAlerts">0</div>
+          <div class="stat-lbl">Alerts Ignored</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Alert History -->
+    <div class="widget">
+      <div class="widget-title">Alert History</div>
+      <div class="history-list" id="historyList">
+        <div style="color:var(--muted);font-size:12px;text-align:center;padding:12px 0;">
+          No alerts yet
+        </div>
+      </div>
+    </div>
+
+  </aside>
+</div>
+
+<script>
+  const SESSION_ID   = "{{ session_id }}";
+  const CONDITION    = "{{ session.condition }}";
+  const DURATION_S   = 30 * 60;  // 30 minutes
+
+  let startTime = Date.now();
+  let alertHistory = [];
+  let alertActive = false;
+  let timerInterval;
+
+  // ── Socket.IO ──────────────────────────────────────────────────────
+  const socket = io();
+  socket.on('connect', () => socket.emit('join_session', { session_id: SESSION_ID }));
+
+  socket.on('posture_update', (msg) => {
+    const { posture, actions, session_metrics } = msg;
+    // console.log("posture update entered")
+    // console.log(posture, actions, session_metrics)
+    if (posture) updatePostureUI(posture);
+    if (actions) handleActions(actions);
+    if (session_metrics) updateStatsUI(session_metrics);
+  });
+
+  //console.log("outside psoture update")
+
+  // ── Actions from server ────────────────────────────────────────────
+  function handleActions(actions) {
+    if (actions.show_alert && !alertActive) {
+      showAlert();
+    }
+    if (actions.hide_alert || actions.alert_expired) {
+      hideAlert(actions.latency_recorded, actions.alert_expired);
+    }
+    if (actions.new_delay !== undefined) {
+      updateDelayDisplay(actions.new_delay);
+    }
+  }
+
+  // ── Posture UI ─────────────────────────────────────────────────────
+  function updatePostureUI(p) {
+    // Status pill
+    const dot  = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    if (p.good) {
+      dot.className = 'status-dot good';
+      text.textContent = 'Good Posture';
+    } else {
+      dot.className = 'status-dot bad';
+      text.textContent = 'Poor Posture';
+    }
+
+    // Score ring
+    const score = p.score;
+    const ringEl = document.getElementById('scoreRingFill');
+    const circumference = 188.5;
+    const offset = circumference - (score / 100) * circumference;
+    ringEl.style.strokeDashoffset = offset;
+    ringEl.style.stroke = score > 70 ? '#22c55e' : score > 40 ? '#f59e0b' : '#ef4444';
+    document.getElementById('scoreText').textContent = score;
+    document.getElementById('scoreLabel').textContent =
+      score > 70 ? 'Good' : score > 40 ? 'Fair' : 'Poor';
+
+    // Metric bars (thresholds: FHA=25, SH=10, TORSO=15)
+    setMetric('fha',  p.fha,   25, p.fha_bad);
+    setMetric('sh',   p.shoulder_tilt, 10, p.sh_bad);
+    setMetric('torso', p.torso_inclination, 15, p.torso_bad);
+  }
+
+  function setMetric(id, val, threshold, isBad) {
+    document.getElementById(id + 'Val').textContent = val + '°';
+    const pct = Math.min(100, (val / (threshold * 2)) * 100);
+    const bar = document.getElementById(id + 'Bar');
+    bar.style.width = pct + '%';
+    bar.style.background = isBad ? '#ef4444' : '#22c55e';
+  }
+
+  // ── Alert UI ───────────────────────────────────────────────────────
+  function showAlert() {
+    alertActive = true;
+    document.getElementById('alertOverlay').classList.add('visible');
+  }
+
+  function hideAlert(latency, expired) {
+    alertActive = false;
+    document.getElementById('alertOverlay').classList.remove('visible');
+
+    // Add to history
+    const entry = { latency, expired: !!expired, time: new Date() };
+    alertHistory.push(entry);
+    renderHistory();
+  }
+
+  function renderHistory() {
+    const list = document.getElementById('historyList');
+    if (alertHistory.length === 0) return;
+    list.innerHTML = [...alertHistory].reverse().slice(0, 10).map((a, i) => {
+      const n = alertHistory.length - i;
+      const dotClass = a.expired ? 'dot-ignored' : 'dot-corrected';
+      const latStr = a.latency ? `${a.latency.toFixed(1)}s` : 'Ignored';
+      return `<div class="history-item">
+        <div class="history-dot ${dotClass}"></div>
+        <span>Alert #${n}</span>
+        <span class="history-latency">${latStr}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // ── Stats UI ───────────────────────────────────────────────────────
+  function updateStatsUI(m) {
+    document.getElementById('totalAlerts').textContent  = m.total_alerts;
+    document.getElementById('avgLatency').textContent   = m.avg_latency ?? '—';
+    document.getElementById('poorDuration').textContent = m.total_poor_duration + 's';
+    document.getElementById('ignoredAlerts').textContent = m.ignored;
+    if (CONDITION === 'adaptive' && m.current_delay !== undefined) {
+      updateDelayDisplay(m.current_delay);
+    }
+  }
+
+  function updateDelayDisplay(delay) {
+    if (CONDITION !== 'adaptive') return;
+    document.getElementById('delayVal').textContent = delay.toFixed(1);
+    const pct = ((delay - 2) / (20 - 2)) * 100;
+    document.getElementById('delayBar').style.width = Math.min(100, Math.max(2, pct)) + '%';
+  }
+
+  // ── Timer ──────────────────────────────────────────────────────────
+  function updateTimer() {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+    const ss = String(elapsed % 60).padStart(2, '0');
+    document.getElementById('timerDisplay').textContent = `${mm}:${ss}`;
+
+    const pct = Math.min(100, (elapsed / DURATION_S) * 100);
+    document.getElementById('progressBar').style.width = pct + '%';
+    document.getElementById('progressPct').textContent = Math.round(pct) + '%';
+
+    // Auto-end at 30 minutes
+    if (elapsed >= DURATION_S) {
+      clearInterval(timerInterval);
+      endSession();
+    }
+  }
+  timerInterval = setInterval(updateTimer, 1000);
+  updateTimer();
+
+  // ── End Session ────────────────────────────────────────────────────
+  async function endSession() {
+    clearInterval(timerInterval);
+    await fetch(`/api/stop_session/${SESSION_ID}`, { method: 'POST' });
+    window.location.href = `/questionnaire/${SESSION_ID}`;
+  }
+</script>
+</body>
+</html>

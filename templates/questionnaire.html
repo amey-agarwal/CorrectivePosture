@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PostureAware — Post-Session Survey</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161921;
+    --surface2: #1e2230;
+    --border: #2a2f3e;
+    --accent: #4f8ef7;
+    --good: #22c55e;
+    --bad: #ef4444;
+    --text: #e8eaf0;
+    --muted: #8892a4;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 40px 24px;
+  }
+
+  .container { max-width: 680px; margin: 0 auto; }
+
+  .page-header { text-align: center; margin-bottom: 40px; }
+  .page-header h1 { font-size: 26px; font-weight: 700; margin-bottom: 8px; }
+  .page-header p  { color: var(--muted); font-size: 14px; line-height: 1.6; }
+
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Likert scale */
+  .question-block { margin-bottom: 24px; }
+  .question-block:last-child { margin-bottom: 0; }
+  .question-text {
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 14px;
+    line-height: 1.5;
+  }
+  .likert-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+  }
+  .likert-anchor {
+    font-size: 11px;
+    color: var(--muted);
+    flex-shrink: 0;
+    width: 80px;
+  }
+  .likert-anchor.right { text-align: right; }
+  .likert-options {
+    display: flex;
+    flex: 1;
+    justify-content: space-between;
+    padding: 0 8px;
+  }
+  .likert-option {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+  .likert-option input[type=radio] { display: none; }
+  .likert-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background: var(--surface2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    transition: all 0.15s;
+    cursor: pointer;
+  }
+  .likert-option:hover .likert-btn {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .likert-option input:checked + .likert-btn {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+  }
+
+  /* Text area */
+  .open-field {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.6;
+    resize: vertical;
+    min-height: 90px;
+    outline: none;
+    font-family: inherit;
+    transition: border-color 0.15s;
+  }
+  .open-field:focus { border-color: var(--accent); }
+  .open-field::placeholder { color: var(--muted); }
+
+  /* Submit */
+  .submit-section { text-align: center; margin-top: 32px; }
+  .submit-btn {
+    padding: 14px 48px;
+    background: linear-gradient(135deg, #4f8ef7, #7c5af5);
+    border: none;
+    border-radius: 10px;
+    color: white;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .submit-btn:hover { opacity: 0.9; }
+  .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .required-note {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 12px;
+  }
+
+  .validation-msg {
+    color: var(--bad);
+    font-size: 13px;
+    margin-top: 14px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="page-header">
+    <h1>📋 Post-Session Survey</h1>
+    <p>Please answer the following questions about your experience.<br>
+       This takes approximately 3–5 minutes. All responses are anonymous.</p>
+  </div>
+
+  <!-- Perceived Helpfulness -->
+  <div class="section">
+    <div class="section-title">Perceived Helpfulness</div>
+
+    <div class="question-block">
+      <div class="question-text">1. The feedback system helped me become aware of my posture.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="helpfulness_aware" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">2. The notifications were useful for improving my posture.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="helpfulness_useful" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">3. I was motivated to correct my posture when alerted.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="helpfulness_motivated" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Perceived Annoyance -->
+  <div class="section">
+    <div class="section-title">Perceived Annoyance</div>
+
+    <div class="question-block">
+      <div class="question-text">4. The alerts were disruptive to my work.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="annoyance_disruptive" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">5. I found the frequency of alerts to be excessive.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="annoyance_frequency" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">6. I started to ignore the alerts over time.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="annoyance_ignored" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Perceived Usability (SUS-inspired) -->
+  <div class="section">
+    <div class="section-title">Perceived Usability</div>
+
+    <div class="question-block">
+      <div class="question-text">7. I found the system easy to use and understand.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="usability_easy" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">8. The visual feedback (overlay) was clear and informative.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="usability_clear" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">9. I felt comfortable being monitored via webcam.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="usability_comfort" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Willingness to Use -->
+  <div class="section">
+    <div class="section-title">Willingness to Use</div>
+
+    <div class="question-block">
+      <div class="question-text">10. I would use this system regularly in my daily work.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="willingness_daily" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">11. I would recommend this system to a colleague or friend.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="willingness_recommend" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">12. The timing of alerts felt appropriate for the task.</div>
+      <div class="likert-row">
+        <span class="likert-anchor">Strongly Disagree</span>
+        <div class="likert-options">
+          {% for i in range(1, 8) %}
+          <label class="likert-option">
+            <input type="radio" name="willingness_timing" value="{{ i }}">
+            <div class="likert-btn">{{ i }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <span class="likert-anchor right">Strongly Agree</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Open-ended -->
+  <div class="section">
+    <div class="section-title">Open Feedback</div>
+
+    <div class="question-block">
+      <div class="question-text">13. What did you find most helpful about the system?</div>
+      <textarea class="open-field" name="open_helpful" placeholder="Your answer…"></textarea>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">14. What would you most like to see improved?</div>
+      <textarea class="open-field" name="open_improve" placeholder="Your answer…"></textarea>
+    </div>
+
+    <div class="question-block">
+      <div class="question-text">15. Any additional comments?</div>
+      <textarea class="open-field" name="open_other" placeholder="Optional…"></textarea>
+    </div>
+  </div>
+
+  <div class="submit-section">
+    <button class="submit-btn" id="submitBtn" onclick="submitQuestionnaire()">
+      Submit & View Results →
+    </button>
+    <p class="required-note">* All Likert questions (1–12) must be answered before submitting.</p>
+    <p class="validation-msg" id="validMsg">Please answer all required questions (1–12).</p>
+  </div>
+
+</div>
+
+<script>
+  const SESSION_ID = "{{ session_id }}";
+
+  const REQUIRED_NAMES = [
+    'helpfulness_aware','helpfulness_useful','helpfulness_motivated',
+    'annoyance_disruptive','annoyance_frequency','annoyance_ignored',
+    'usability_easy','usability_clear','usability_comfort',
+    'willingness_daily','willingness_recommend','willingness_timing'
+  ];
+
+  async function submitQuestionnaire() {
+    // Validate all Likert items answered
+    const missing = REQUIRED_NAMES.filter(n => !document.querySelector(`input[name="${n}"]:checked`));
+    if (missing.length > 0) {
+      document.getElementById('validMsg').style.display = 'block';
+      // Scroll to first missing
+      const firstMissing = document.querySelector(`input[name="${missing[0]}"]`);
+      firstMissing?.closest('.question-block')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+
+    const data = {};
+    REQUIRED_NAMES.forEach(n => {
+      data[n] = parseInt(document.querySelector(`input[name="${n}"]:checked`).value);
+    });
+    // Open fields
+    document.querySelectorAll('textarea[name]').forEach(el => {
+      data[el.name] = el.value.trim();
+    });
+
+    // Computed subscale scores
+    data['score_helpfulness'] = average([data.helpfulness_aware, data.helpfulness_useful, data.helpfulness_motivated]);
+    data['score_annoyance']   = average([data.annoyance_disruptive, data.annoyance_frequency, data.annoyance_ignored]);
+    data['score_usability']   = average([data.usability_easy, data.usability_clear, data.usability_comfort]);
+    data['score_willingness'] = average([data.willingness_daily, data.willingness_recommend, data.willingness_timing]);
+
+    const resp = await fetch(`/api/submit_questionnaire/${SESSION_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const result = await resp.json();
+    window.location.href = `/results/${SESSION_ID}`;
+  }
+
+  function average(arr) {
+    return Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 100) / 100;
+  }
+</script>
+</body>
+</html>

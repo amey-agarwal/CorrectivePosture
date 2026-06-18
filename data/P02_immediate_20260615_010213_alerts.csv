@@ -1,0 +1,4 @@
+alert_id,shown_at,condition,delay_threshold,corrected,latency,correction_time
+1,1781499604.553,immediate,5.0,True,2.05,1781499606.6
+2,1781499610.808,immediate,5.0,True,4.17,1781499614.974
+3,1781499648.336,immediate,5.0,True,22.86,1781499671.194
