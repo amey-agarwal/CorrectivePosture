@@ -15,9 +15,16 @@ from datetime import datetime
 from flask import Flask, render_template, Response, request, jsonify
 from flask_socketio import SocketIO, emit
 
+import audio_alerts
+from calibration import CalibrationSession
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'posture-study-secret'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# How long (s) with no person/landmarks detected before we play the
+# "no person detected" chime, to nudge the participant back into frame.
+NO_PERSON_CHIME_AFTER_S = 25.0
 
 # ─── MediaPipe Setup ────────────────────────────────────────────────────────────
 mp_pose = mp.solutions.pose
@@ -33,7 +40,10 @@ pose = mp_pose.Pose(
 # ─── Session State ───────────────────────────────────────────────────────────────
 sessions = {}
 
-def create_session(participant_id, condition, age=None, gender=None):
+calibrations = {}   # session_id -> CalibrationSession (pre-study calibration in progress)
+
+
+def create_session(participant_id, condition, age=None, gender=None, baseline=None):
     """Initialize a new participant session."""
     return {
         'participant_id': participant_id,
@@ -43,10 +53,17 @@ def create_session(participant_id, condition, age=None, gender=None):
         'start_time': time.time(),
         'end_time': None,
 
+        # Personalised posture baseline from calibration (or None = use defaults)
+        'baseline': baseline,
+
         # Posture tracking
         'current_posture_good': True,
         'posture_bad_start': None,
         'total_poor_posture_duration': 0.0,
+
+        # No-person-detected tracking (for the "are you still there" chime)
+        'last_person_seen_at': time.time(),
+        'no_person_chime_played': False,
 
         # Feedback state
         'feedback_active': False,
@@ -86,16 +103,28 @@ def compute_angle(a, b, c):
     return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
 
 
-def analyze_posture(landmarks, image_w, image_h):
+def analyze_posture(landmarks, image_w, image_h,baseline=None):
     """
-    Extract posture metrics from MediaPipe Pose landmarks.
-    Returns a dict with metric values and an overall 'good' boolean.
+    Extract posture metrics from MediaPipe Pose landmarks using ONLY
+    upper-body landmarks (nose, ears, shoulders). Hips/torso are NOT
+    required, so the metrics work even when only the chest-and-above
+    region of the participant is visible on camera.
+
+    If `baseline` is provided (dict with 'fha', 'shoulder_tilt', 'neck_tilt'
+    keys captured during calibration), thresholds are computed relative to
+    the participant's own neutral sitting posture rather than fixed
+    population defaults.
+
+    Returns a dict with metric values and an overall 'good' boolean, or
+    None if not enough upper-body landmarks are visible.
     """
     #print("==================Entered analyze_posture==================")
     lm = landmarks.landmark
 
     def pt(idx):
         return [lm[idx].x * image_w, lm[idx].y * image_h]
+    
+    # Key points — chest and above only
 
     # Key points
     nose       = pt(mp_pose.PoseLandmark.NOSE)
@@ -103,26 +132,35 @@ def analyze_posture(landmarks, image_w, image_h):
     right_ear  = pt(mp_pose.PoseLandmark.RIGHT_EAR)
     left_sh    = pt(mp_pose.PoseLandmark.LEFT_SHOULDER)
     right_sh   = pt(mp_pose.PoseLandmark.RIGHT_SHOULDER)
-    left_hip   = pt(mp_pose.PoseLandmark.LEFT_HIP)
-    right_hip  = pt(mp_pose.PoseLandmark.RIGHT_HIP)
+    # left_hip   = pt(mp_pose.PoseLandmark.LEFT_HIP)
+    # right_hip  = pt(mp_pose.PoseLandmark.RIGHT_HIP)
 
-    # Visibility check
+    # Visibility check — only require nose, ears, shoulders (no hips)
     key_indices = [
         mp_pose.PoseLandmark.NOSE,
+        mp_pose.PoseLandmark.LEFT_EAR,
+        mp_pose.PoseLandmark.RIGHT_EAR,
         mp_pose.PoseLandmark.LEFT_SHOULDER,
         mp_pose.PoseLandmark.RIGHT_SHOULDER,
-        mp_pose.PoseLandmark.LEFT_HIP,
-        mp_pose.PoseLandmark.RIGHT_HIP,
+        # mp_pose.PoseLandmark.LEFT_HIP,
+        # mp_pose.PoseLandmark.RIGHT_HIP,
     ]
+    visibilities = [lm[i].visibility for i in key_indices]
+    min_vis = min(visibilities)
     min_vis = min(lm[i].visibility for i in key_indices)
     if min_vis < 0.5:
         print("Not enough visibility")
-        return None  # Not enough visibility
+        return None  # Not enough visibility of the upper body
 
     # ── Metric 1: Forward-head angle ──────────────────────────────────
     # Mid-ear → mid-shoulder vertical deviation
     mid_ear = [(left_ear[0] + right_ear[0]) / 2, (left_ear[1] + right_ear[1]) / 2]
     mid_sh  = [(left_sh[0] + right_sh[0]) / 2,  (left_sh[1] + right_sh[1]) / 2]
+
+    # ── Metric 1: Forward-head angle ──────────────────────────────────
+    # Mid-ear → mid-shoulder vertical deviation. Close to 0 = upright,
+    # increases as the head juts forward relative to the shoulder line.
+
     # Reference vertical above mid_sh
     vertical_ref = [mid_sh[0], mid_sh[1] - 100]
     fha = compute_angle(mid_ear, mid_sh, vertical_ref)
@@ -134,38 +172,72 @@ def analyze_posture(landmarks, image_w, image_h):
     shoulder_tilt = math.degrees(math.atan2(sh_dy, sh_dx + 1e-6))
     # Near 0 = level shoulders; increases as one shoulder rises/falls
 
+    ######### REMOVING METRIC 3
     # ── Metric 3: Torso inclination ───────────────────────────────────
-    mid_hip = [(left_hip[0] + right_hip[0]) / 2, (left_hip[1] + right_hip[1]) / 2]
-    torso_dx = mid_sh[0] - mid_hip[0]
-    torso_dy = mid_sh[1] - mid_hip[1]
-    # Angle of torso from vertical (should be near 0 when sitting upright)
-    torso_inclination = abs(math.degrees(math.atan2(torso_dx, -torso_dy + 1e-6)))
+    # mid_hip = [(left_hip[0] + right_hip[0]) / 2, (left_hip[1] + right_hip[1]) / 2]
+    # torso_dx = mid_sh[0] - mid_hip[0]
+    # torso_dy = mid_sh[1] - mid_hip[1]
+    # # Angle of torso from vertical (should be near 0 when sitting upright)
+    # torso_inclination = abs(math.degrees(math.atan2(torso_dx, -torso_dy + 1e-6)))
+    ######### REMOVING OLD CLASSIFICATION THRESHOLDS
+    # # ── Classification thresholds ──────────────────────────────────────
+    # FHA_THRESHOLD         = 25.0   # degrees forward head
+    # SHOULDER_THRESHOLD    = 10.0   # degrees tilt
+    # TORSO_THRESHOLD       = 15.0   # degrees lean
 
-    # ── Classification thresholds ──────────────────────────────────────
-    FHA_THRESHOLD         = 25.0   # degrees forward head
-    SHOULDER_THRESHOLD    = 10.0   # degrees tilt
-    TORSO_THRESHOLD       = 15.0   # degrees lean
+
+    # ── Metric 3: Neck/torso inclination (upper-body-only proxy) ──────
+    # Without hip landmarks we can't measure full torso lean, so this
+    # uses the shoulder-line midpoint to nose angle from vertical as a
+    # proxy for upper-torso/neck inclination (slouching toward the
+    # screen tilts this line forward).
+    horiz_ref = [mid_sh[0] + 100, mid_sh[1]]
+    neck_tilt = abs(90 - compute_angle(nose, mid_sh, horiz_ref))
+
+    # ── Thresholds: baseline-relative if available, else population default ──
+    if baseline:
+        FHA_THRESHOLD      = baseline['fha']           + baseline.get('fha_tol', 12.0)
+        SHOULDER_THRESHOLD = baseline['shoulder_tilt']  + baseline.get('shoulder_tol', 6.0)
+        NECK_THRESHOLD      = baseline['neck_tilt']      + baseline.get('neck_tol', 10.0)
+    else:
+        FHA_THRESHOLD      = 25.0
+        SHOULDER_THRESHOLD = 10.0
+        NECK_THRESHOLD      = 15.0
 
     fha_bad       = fha > FHA_THRESHOLD
     sh_bad        = shoulder_tilt > SHOULDER_THRESHOLD
-    torso_bad     = torso_inclination > TORSO_THRESHOLD
+    neck_bad      = neck_tilt > NECK_THRESHOLD
+    #torso_bad     = torso_inclination > TORSO_THRESHOLD
 
     if fha_bad:
         print("Forward head bad posture detected")
     if sh_bad:
         print("tilt bad posture detected")
-    if torso_bad:
-        print("lean bad psoture detected")
+    if neck_bad:
+        print("neck bad posture detected")
+    # if torso_bad:
+    #     print("lean bad psoture detected")
 
-    # Overall: bad if any two or more metrics are bad, or FHA alone is very bad
-    issues = sum([fha_bad, sh_bad, torso_bad])
-    posture_good = not (issues >= 2 or fha > 35)
+    # # Overall: bad if any two or more metrics are bad, or FHA alone is very bad
+    # issues = sum([fha_bad, sh_bad, torso_bad])
+    # posture_good = not (issues >= 2 or fha > 35)
 
-    # Compute a 0-100 score (100 = perfect)
-    fha_score     = max(0, 100 - (fha / FHA_THRESHOLD) * 50)
-    sh_score      = max(0, 100 - (shoulder_tilt / SHOULDER_THRESHOLD) * 50)
-    torso_score   = max(0, 100 - (torso_inclination / TORSO_THRESHOLD) * 50)
-    overall_score = int((fha_score * 0.5 + sh_score * 0.25 + torso_score * 0.25))
+    # Overall: bad if 2+ metrics bad, or FHA alone far beyond threshold
+    issues = sum([fha_bad, sh_bad, neck_bad])
+    posture_good = not (issues >= 1 or fha > FHA_THRESHOLD + 10)
+
+    # # Compute a 0-100 score (100 = perfect)
+    # fha_score     = max(0, 100 - (fha / FHA_THRESHOLD) * 50)
+    # sh_score      = max(0, 100 - (shoulder_tilt / SHOULDER_THRESHOLD) * 50)
+    # torso_score   = max(0, 100 - (torso_inclination / TORSO_THRESHOLD) * 50)
+    # overall_score = int((fha_score * 0.5 + sh_score * 0.25 + torso_score * 0.25))
+
+    # 0-100 score (100 = perfect), scaled relative to active thresholds
+    fha_score   = max(0, 100 - (fha / FHA_THRESHOLD) * 50)
+    sh_score    = max(0, 100 - (shoulder_tilt / SHOULDER_THRESHOLD) * 50)
+    neck_score  = max(0, 100 - (neck_tilt / NECK_THRESHOLD) * 50)
+    overall_score = int((fha_score * 0.5 + sh_score * 0.25 + neck_score * 0.25))
+
     overall_score = max(0, min(100, overall_score))
 
     return {
@@ -173,10 +245,12 @@ def analyze_posture(landmarks, image_w, image_h):
         'score': overall_score,
         'fha': round(fha, 1),
         'shoulder_tilt': round(shoulder_tilt, 1),
-        'torso_inclination': round(torso_inclination, 1),
+        #'torso_inclination': round(torso_inclination, 1),
+        'torso_inclination': round(neck_tilt, 1),   # kept key name for UI/CSV compatibility
         'fha_bad': fha_bad,
         'sh_bad': sh_bad,
-        'torso_bad': torso_bad,
+        #'torso_bad': torso_bad,
+        'torso_bad': neck_bad,
         'min_visibility': round(min_vis, 2),
     }
 
@@ -223,6 +297,10 @@ def process_posture_update(session_id, posture_data, timestamp):
 
     actions = {}
     posture_good = posture_data['good']
+
+    # Person is visible this frame — reset the "missing" tracker
+    sess['last_person_seen_at'] = timestamp
+    sess['no_person_chime_played'] = False
 
     # ── Transition: good → bad ────────────────────────────────────────
     if not posture_good and sess['current_posture_good']:
@@ -293,10 +371,12 @@ def process_posture_update(session_id, posture_data, timestamp):
                 actions['alert_id'] = sess['total_alerts']
                 actions['current_delay'] = round(sess['current_delay_threshold'], 1)
 
+                audio_alerts.play_posture_alert()
+
     # ── Check for ignored alert (timeout at 30s) ───────────────────────
     if sess['feedback_active'] and sess['feedback_shown_at']:
         time_since_alert = timestamp - sess['feedback_shown_at']
-        if time_since_alert > 30.0 and sess['correction_pending']:
+        if time_since_alert > 6.0 and sess['correction_pending']:
             sess['ignored_alerts'] += 1
             if sess['current_alert']:
                 sess['current_alert']['corrected'] = False
@@ -315,6 +395,63 @@ def process_posture_update(session_id, posture_data, timestamp):
 
     return actions
 
+def handle_no_person_detected(session_id, timestamp):
+    """
+    Called on frames where MediaPipe found no pose landmarks at all, or
+    visibility was too low for analyze_posture() to return a result
+    (e.g. participant stepped away, or only lower body is in frame).
+    Plays a reminder chime if this persists past NO_PERSON_CHIME_AFTER_S.
+    """
+    if session_id not in sessions:
+        return
+    sess = sessions[session_id]
+    if not sess['active']:
+        return
+
+    elapsed_missing = timestamp - sess['last_person_seen_at']
+    if elapsed_missing >= NO_PERSON_CHIME_AFTER_S and not sess['no_person_chime_played']:
+        audio_alerts.play_no_person_detected()
+        sess['no_person_chime_played'] = True
+
+
+# ─── Shared Webcam Manager ────────────────────────────────────────────────────
+class WebcamManager:
+    """
+    Single shared cv2.VideoCapture instance, reference-counted so both the
+    calibration step and the live monitoring stream can read frames from
+    the same camera handle without each opening their own device (which
+    fails or pops up duplicate device-access prompts on some systems).
+    No cv2.imshow/waitKey are ever called — frames only ever leave this
+    process as MJPEG bytes over HTTP, so no separate window is opened.
+    """
+    def __init__(self):
+        self.cap = None
+        self.ref_count = 0
+
+    def acquire(self):
+        if self.cap is None or not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(0)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_FPS, 24)
+        self.ref_count += 1
+        return self.cap
+
+    def release(self):
+        self.ref_count = max(0, self.ref_count - 1)
+        if self.ref_count == 0 and self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+    def read(self):
+        if self.cap is None:
+            return False, None
+        return self.cap.read()
+
+
+webcam = WebcamManager()
+
+
 
 # ─── Video Stream ─────────────────────────────────────────────────────────────
 def generate_frames(session_id):
@@ -332,7 +469,7 @@ def generate_frames(session_id):
             print("Failed to grab frame")
             break
         
-        cv2.imshow('Video Feed', frame)
+        # cv2.imshow('Video Feed', frame)
 
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]

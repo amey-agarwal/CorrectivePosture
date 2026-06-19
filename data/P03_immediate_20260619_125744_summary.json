@@ -1,0 +1,17 @@
+{
+  "participant_id": "P03",
+  "condition": "immediate",
+  "age": "25",
+  "gender": "Male",
+  "session_duration_s": 42.3,
+  "total_alerts": 1,
+  "ignored_alerts": 0,
+  "total_poor_posture_s": 6.3,
+  "pct_time_poor_posture": 14.8,
+  "response_latencies": [
+    2.09
+  ],
+  "avg_latency_s": 2.09,
+  "median_latency_s": 2.09,
+  "final_delay_threshold": 5.0
+}

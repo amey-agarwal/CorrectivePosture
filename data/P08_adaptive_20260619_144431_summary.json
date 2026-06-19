@@ -1,0 +1,24 @@
+{
+  "participant_id": "P08",
+  "condition": "adaptive",
+  "age": "23",
+  "gender": "Male",
+  "session_duration_s": 277.8,
+  "total_alerts": 20,
+  "ignored_alerts": 12,
+  "total_poor_posture_s": 178.6,
+  "pct_time_poor_posture": 64.3,
+  "response_latencies": [
+    6.25,
+    4.09,
+    6.34,
+    4.17,
+    4.16,
+    2.09,
+    6.25,
+    4.16
+  ],
+  "avg_latency_s": 4.69,
+  "median_latency_s": 4.17,
+  "final_delay_threshold": 2.0
+}

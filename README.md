@@ -4,6 +4,7 @@ Stuff that needs to be fixed
 - Errors in analyze_results.py
 - The data logging is only based on alerts
 - there is no adaptive feedback mechanism developed
+- the detection should end if the session ends
 
 Things to add
 - PyAudio : test chime button
@@ -46,3 +47,8 @@ Things to mention to user in writeup document
 - run for baseline script of normal seating position
 - chime if no posture identified for long time
 - sometimes the software fails on first run, the web cam doesnt work, requires software start again
+
+Hyperparameters set for us to consider:
+- timeout for considering a postue alert is ignored : no response for 30s (app.py : line 296)
+- thresholds for posture (app.py : line 144)
+- number of bad posture identified for alert (app.py : line 277)
