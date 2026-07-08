@@ -45,6 +45,7 @@ Things to mention to user in writeup document
 - chime if no posture identified for long time
 - sometimes the software fails on first run, the web cam doesnt work, requires software start again
 - If you are having an annoying day or busy day, don't use the system. If you are bored and want to sit and do work but also have some fun maybe use the system
+- might detect a posture that is bad but may not be the same case for you
 
 Hyperparameters set for us to consider:
 - timeout for considering a postue alert is ignored : no response for 30s (app.py : line 296)
