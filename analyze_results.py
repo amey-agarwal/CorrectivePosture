@@ -41,9 +41,11 @@ def load_all_summaries(data_dir='data'):
     for path in glob.glob(os.path.join(data_dir, '*_summary.json')):
         with open(path) as f:
             d = json.load(f)
-        if d['condition'] == 'immediate':
-            immediate.append(d)
-        else:
+        # if 'P09'==d['participant_id'] and d['condition'] == 'immediate':
+        #     immediate.append(d)
+        # else:
+        #     adaptive.append(d)
+        if 'P09'==d['participant_id']:
             adaptive.append(d)
     return immediate, adaptive
 
@@ -87,7 +89,7 @@ COLORS = {'immediate': '#f59e0b', 'adaptive': '#4f8ef7'}
 
 def box_compare(ax, imm, adp, title, ylabel, invert_better=False):
     bp = ax.boxplot([imm, adp],
-                    labels=['Immediate', 'Adaptive'],
+                    #labels=['Immediate', 'Adaptive'],
                     patch_artist=True,
                     medianprops=dict(color='white', linewidth=2),
                     whiskerprops=dict(color='#8892a4'),
@@ -153,8 +155,8 @@ def adaptive_delay_trajectory(adaptive_group, out_dir='data'):
     if not HAS_MATPLOTLIB or not adaptive_group:
         return
 
-    fig, ax = plt.subplots(figsize=(10, 5), facecolor='#0d0f14')
-    ax.set_facecolor('#1e2230')
+    fig, ax = plt.subplots(figsize=(20, 3), facecolor="#ffffff")
+    ax.set_facecolor("#fcfdff")
 
     for p in adaptive_group:
         pid = p.get('participant_id', '?')
@@ -174,21 +176,21 @@ def adaptive_delay_trajectory(adaptive_group, out_dir='data'):
         if delays:
             ax.plot(range(1, len(delays)+1), delays,
                     marker='o', markersize=4, linewidth=1.5,
-                    alpha=0.7, label=pid)
+                    alpha=0.7, label=pid, color="orange")
 
-    ax.axhline(5.0, color='#8892a4', linestyle='--', linewidth=0.8, label='Initial (5s)')
-    ax.set_xlabel('Alert Number', color='#8892a4', fontsize=10)
-    ax.set_ylabel('Delay Threshold (s)', color='#8892a4', fontsize=10)
+    ax.axhline(5.0, color="#3e3c37", linestyle='--', linewidth=0.8, label='Initial (5s)')
+    ax.set_xlabel('Alert Number', color="#000000", fontsize=10)
+    ax.set_ylabel('Delay Threshold (s)', color="#000000", fontsize=10)
     ax.set_title('Adaptive Delay Threshold Evolution per Participant',
-                 color='white', fontsize=12, fontweight='bold')
-    ax.tick_params(colors='#8892a4')
-    ax.legend(fontsize=8, facecolor='#2a2f3e', labelcolor='white', framealpha=0.8)
+                 color='black', fontsize=12, fontweight='bold')
+    ax.tick_params(colors="#000000")
+    ax.legend(fontsize=8, facecolor="#000000", labelcolor='white', framealpha=0.8)
     for spine in ax.spines.values():
-        spine.set_color('#2a2f3e')
+        spine.set_color("#000000")
 
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     out = os.path.join(out_dir, f'adaptive_trajectory_{ts}.png')
-    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor='#0d0f14')
+    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor="#ffffff")
     plt.close()
     print(f"✓ Trajectory plot saved: {out}")
 

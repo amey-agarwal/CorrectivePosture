@@ -1,19 +1,15 @@
 # Posture Study
 
 Stuff that needs to be fixed
-- Errors in analyze_results.py
 - The data logging is only based on alerts
-- there is no adaptive feedback mechanism developed
 - the detection should end if the session ends
 
 Things to add
-- PyAudio : test chime button
 - testing for the system lighting is fine, if it is able to detect posture errors
 - more postures to be incorporated
 - feedback in case posture is detected as bad but not as per user --> feedback button
 - running script that turns data logged to zip file for easy sharing for user
 - run baseline script that understands the 'normal' seating position of the user
-- chime if noo posture identified for long time
 
 Stuff to check before particpant starts study
 - correct python version
@@ -25,6 +21,7 @@ Stuff to check before particpant starts study
 - visual prompt if possible which can be dismissed --> guided tour type
 - tackling errors that may arise 
     - not enough visbility
+- Do not wear earphones to expect to hear the sound --> won't work 
 
 Questions to discuss
 - tell the user about the study ? --> split cohorts that know and don't know 
@@ -47,8 +44,15 @@ Things to mention to user in writeup document
 - run for baseline script of normal seating position
 - chime if no posture identified for long time
 - sometimes the software fails on first run, the web cam doesnt work, requires software start again
+- If you are having an annoying day or busy day, don't use the system. If you are bored and want to sit and do work but also have some fun maybe use the system
 
 Hyperparameters set for us to consider:
 - timeout for considering a postue alert is ignored : no response for 30s (app.py : line 296)
 - thresholds for posture (app.py : line 144)
 - number of bad posture identified for alert (app.py : line 277)
+
+Interesting thinga to mention
+- https://www.reddit.com/r/explainlikeimfive/comments/s1djn2/eli5_why_are_sitting_positions_that_are_bad_for/
+- I don't remember where I read this but I recall this reply from a doctor to the question "Which is the best posture?"
+
+Answer: "The next one."

@@ -456,7 +456,7 @@ webcam = WebcamManager()
 # ─── Video Stream ─────────────────────────────────────────────────────────────
 def generate_frames(session_id):
     """Generator that yields annotated MJPEG frames."""
-    cap = cv2.VideoCapture(0)
+    cap = webcam.acquire()
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 24)
@@ -469,8 +469,8 @@ def generate_frames(session_id):
             print("Failed to grab frame")
             break
         
-        # cv2.imshow('Video Feed', frame)
-
+        # NOTE: Do NOT call cv2.imshow/waitKey on the server.
+        # The monitor.html page displays this MJPEG stream via <img>.
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -482,20 +482,20 @@ def generate_frames(session_id):
 
             if posture_data:
                 # Draw skeleton overlay
-                # color = (0, 220, 80) if posture_data['good'] else (50, 50, 255)
-                # mp_drawing.draw_landmarks(
-                #     frame,
-                #     results.pose_landmarks,
-                #     mp_pose.POSE_CONNECTIONS,
-                #     mp_drawing.DrawingSpec(color=color, thickness=2, circle_radius=3),
-                #     mp_drawing.DrawingSpec(color=color, thickness=2)
-                # )
+                color = (0, 220, 80) if posture_data['good'] else (50, 50, 255)
+                mp_drawing.draw_landmarks(
+                    frame,
+                    results.pose_landmarks,
+                    mp_pose.POSE_CONNECTIONS,
+                    mp_drawing.DrawingSpec(color=color, thickness=2, circle_radius=3),
+                    mp_drawing.DrawingSpec(color=color, thickness=2)
+                )
 
-                # # Score badge
-                # score_text = f"Score: {posture_data['score']}"
-                # cv2.rectangle(frame, (8, 8), (175, 42), (0, 0, 0), -1)
-                # cv2.putText(frame, score_text, (14, 32),
-                #             cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+                # Score badge
+                score_text = f"Score: {posture_data['score']}"
+                cv2.rectangle(frame, (8, 8), (175, 42), (0, 0, 0), -1)
+                cv2.putText(frame, score_text, (14, 32),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
 
                 # Emit posture update via SocketIO (throttled to 5 Hz)
                 now = time.time()
@@ -512,15 +512,16 @@ def generate_frames(session_id):
                     socketio.sleep(2) #non-blocking sleep required by eventlet/gevent
                     #print(sessions[session_id])
 
-        # _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        # yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' +
-        #        buffer.tobytes() + b'\r\n')
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' +
+               buffer.tobytes() + b'\r\n')
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # (No cv2.waitKey/break here; browser consumes frames over HTTP.)
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #     break
 
-    cap.release()
-    cv2.destroyAllWindows()
+    webcam.release()
+    # cv2.destroyAllWindows()  # no local window opened in server mode
 
 
 def get_live_metrics(session_id):
@@ -539,6 +540,11 @@ def get_live_metrics(session_id):
         'condition': sess['condition'],
         'ignored': sess['ignored_alerts'],
     }
+
+def user_data_calibration():
+    user_calibration = CalibrationSession()
+    user_calibration.add_lighting_frame()
+    user_calibration.start_posture_capture()
 
 
 # ─── CSV Data Export ──────────────────────────────────────────────────────────
@@ -630,6 +636,9 @@ def video_feed(session_id):
 # ─── API Endpoints ────────────────────────────────────────────────────────────
 @app.route('/api/start_session', methods=['POST'])
 def start_session():
+
+    # user_data_calibration()
+
     data = request.json
     participant_id = data.get('participant_id', f"P{int(time.time())}")
     condition = data.get('condition', 'immediate')  # 'immediate' or 'adaptive'
@@ -637,7 +646,8 @@ def start_session():
     gender = data.get('gender')
 
     session_id = f"{participant_id}_{condition}_{int(time.time())}"
-    sessions[session_id] = create_session(participant_id, condition, age, gender)
+
+    sessions[session_id] = create_session(participant_id, condition, age, gender,calibrations)
     sessions[session_id]['active'] = True
 
     return jsonify({'session_id': session_id, 'status': 'started'})

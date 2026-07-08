@@ -102,6 +102,30 @@
     object-fit: cover;
   }
 
+  /* Video toggle */
+  .video-toggle-btn {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 6;
+    padding: 8px 12px;
+    background: rgba(22,25,33,0.75);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: background 0.15s;
+  }
+  .video-toggle-btn:hover { background: rgba(22,25,33,0.95); }
+
+  .camera-feed.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+
   /* ── Posture status overlay (top of camera) ── */
   .posture-overlay {
     position: absolute;
@@ -381,6 +405,8 @@
 
   <!-- Camera Panel -->
   <div class="camera-panel">
+    <button class="video-toggle-btn" id="videoToggleBtn" onclick="toggleVideo()">Hide Video</button>
+
     <img class="camera-feed" src="/video_feed/{{ session_id }}" id="camFeed"
          onerror="document.getElementById('noCamera').style.display='block'">
 
@@ -685,6 +711,16 @@
   updateTimer();
 
   // ── End Session ────────────────────────────────────────────────────
+  function toggleVideo() {
+    const cam = document.getElementById('camFeed');
+    const btn = document.getElementById('videoToggleBtn');
+    if (!cam || !btn) return;
+
+    const isHidden = cam.classList.toggle('hidden');
+    // toggle() returns boolean: true when class was added
+    btn.textContent = isHidden ? 'Show Video' : 'Hide Video';
+  }
+
   async function endSession() {
     clearInterval(timerInterval);
     await fetch(`/api/stop_session/${SESSION_ID}`, { method: 'POST' });
