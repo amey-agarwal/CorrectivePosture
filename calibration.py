@@ -1,163 +1,173 @@
 """
 calibration.py
-────────────────
-Runs once at the start of each participant session, BEFORE the study
-timer starts. Three checks happen in sequence, all surfaced through the
-web UI (no separate OpenCV window is ever opened):
+──────────────
+Runs once before each study session.  Three stages:
 
-  1. Lighting check       — samples webcam frames, flags under/over-exposed
-                             or low-contrast conditions that would make
-                             MediaPipe's pose estimation unreliable.
-  2. Baseline posture capture — asks the participant to sit normally for a
-                             few seconds and records their neutral
-                             forward-head angle, shoulder tilt, and neck
-                             tilt. These become the personalised reference
-                             values that `analyze_posture()` compares
-                             against, instead of fixed population
-                             thresholds.
-  3. Chime test            — plays the same chime used for real posture
-                             alerts so the participant can confirm their
-                             volume is audible.
+  1. lighting   — samples webcam frames; flags under/over-exposure and
+                  low contrast that would impair MediaPipe tracking.
+  2. posture    — captures the participant's neutral "good" sitting
+                  position for CAPTURE_SECONDS seconds and derives
+                  personalised baseline values for each metric.
+  3. audio      — plays the alert chime so the participant can confirm
+                  volume is audible before the study starts.
 
-All capture happens through the existing MJPEG video pipeline; this
-module only holds state and pure-Python analysis functions, so it
-introduces no extra camera windows or capture loops.
+All logic here is pure Python / NumPy; it does not open any camera or
+windows — the existing MJPEG video pipeline feeds frames in.
 """
 
+from __future__ import annotations
 import time
 import numpy as np
-
 import audio_alerts
+
+# How many seconds to capture the neutral sitting position
+CAPTURE_SECONDS: float = 8.0
+
+# Tolerance (added on top of the captured baseline value before flagging
+# a reading as "bad posture").  Tune to taste.
+TOLERANCES = {
+    "neck_tilt":      8.0,   # degrees
+    "shoulder_tilt":  6.0,   # degrees
+    "face_proximity": 0.10,  # normalised-landmark units (larger = further away)
+}
+
+# Minimum number of valid frames needed before the baseline is accepted
+MIN_SAMPLES = 20
 
 
 class CalibrationSession:
     """Holds in-progress calibration state for one participant session."""
 
-    def __init__(self, sample_seconds=5.0, required_samples=20):
-        self.sample_seconds = sample_seconds
-        self.required_samples = required_samples
+    # ------------------------------------------------------------------
+    def __init__(self) -> None:
+        self.stage: str = "lighting"   # lighting → posture → audio → done
 
-        self.stage = 'lighting'       # 'lighting' -> 'posture' -> 'audio' -> 'done'
-        self.lighting_samples = []     # list of (brightness, contrast)
-        self.lighting_ok = None
-        self.lighting_message = ''
+        # Stage 1 ── lighting
+        self._light_frames: list[tuple[float, float]] = []  # (brightness, contrast)
+        self.lighting_ok: bool | None = None
+        self.lighting_message: str = ""
 
-        self.posture_samples = []      # list of raw metric dicts from analyze_posture
-        self.posture_started_at = None
-        self.baseline = None           # final computed baseline thresholds
+        # Stage 2 ── posture baseline
+        self._posture_samples: list[dict] = []
+        self._capture_start: float | None = None
+        self.baseline: dict | None = None
 
-        self.audio_tested = False
+        # Stage 3 ── audio
+        self.audio_tested: bool = False
 
-    # ── Stage 1: Lighting ──────────────────────────────────────────────
-    def add_lighting_frame(self, frame_bgr):
-        """Call once per incoming frame while stage == 'lighting'."""
+    # ── Stage 1 ─────────────────────────────────────────────────────────
+
+    def add_lighting_frame(self, frame_bgr) -> None:
+        """Feed a raw BGR frame; call each time a new frame arrives while
+        stage == 'lighting'."""
+        # print(len(self._light_frames))
         gray = frame_bgr.mean(axis=2)
-        brightness = float(gray.mean())
-        contrast = float(gray.std())
-        self.lighting_samples.append((brightness, contrast))
-
-        if len(self.lighting_samples) >= 15:
+        self._light_frames.append((float(gray.mean()), float(gray.std())))
+        if self.lighting_ok is None and len(self._light_frames) >= 20:
             self._evaluate_lighting()
 
-    def _evaluate_lighting(self):
-        b_vals = [s[0] for s in self.lighting_samples]
-        c_vals = [s[1] for s in self.lighting_samples]
-        avg_b = float(np.mean(b_vals))
-        avg_c = float(np.mean(c_vals))
+    def _evaluate_lighting(self) -> None:
+        # print("Evaluating lighting")
+        b = np.mean([f[0] for f in self._light_frames])
+        c = np.mean([f[1] for f in self._light_frames])
 
-        if avg_b < 50:
-            self.lighting_ok = False
-            self.lighting_message = 'Too dark — add a light source facing you, or move closer to a window.'
-        elif avg_b > 200:
-            self.lighting_ok = False
-            self.lighting_message = 'Too bright / overexposed — reduce backlight or strong light behind you.'
-        elif avg_c < 20:
-            self.lighting_ok = False
-            self.lighting_message = 'Low contrast — the camera may be struggling to see you clearly. Try better lighting.'
+        print(f"Brightness={b:.2f}, Contrast={c:.2f}")
+
+        if b < 45:
+            ok, msg = False, "Too dark — add a light source facing you, or move to a brighter spot."
+        elif b > 205:
+            ok, msg = False, "Overexposed — reduce strong backlighting or move away from a bright window."
+        elif c < 18:
+            ok, msg = False, "Low contrast — the camera can barely see you. Improve your lighting."
         else:
-            self.lighting_ok = True
-            self.lighting_message = 'Lighting looks good.'
+            ok, msg = True, "Lighting looks good ✓"
 
-        return self.lighting_ok
+        print(ok, msg)
 
-    def lighting_status(self):
+        self.lighting_ok = ok
+        self.lighting_message = msg
+
+    def lighting_status(self) -> dict:
         return {
-            'sampled': len(self.lighting_samples),
-            'required': 15,
-            'ok': self.lighting_ok,
-            'message': self.lighting_message,
+            "sampled": len(self._light_frames),
+            "required": 20,
+            "ok": self.lighting_ok,
+            "message": self.lighting_message,
         }
 
-    # ── Stage 2: Baseline posture ──────────────────────────────────────
-    def start_posture_capture(self):
-        self.stage = 'posture'
-        self.posture_samples = []
-        self.posture_started_at = time.time()
+    # ── Stage 2 ─────────────────────────────────────────────────────────
 
-    def add_posture_sample(self, raw_metrics):
-        """raw_metrics: dict with keys fha, shoulder_tilt, torso_inclination
-        (i.e. the same dict shape `analyze_posture` returns, captured with
-        baseline=None so it reflects raw angles, not a good/bad verdict)."""
+    def start_posture_capture(self) -> None:
+        self.stage = "posture"
+        self._posture_samples = []
+        self._capture_start = time.time()
+        audio_alerts.play_calibration_start()
+
+    def add_posture_sample(self, raw_metrics: dict | None) -> None:
+        """raw_metrics: output of analyze_posture() with baseline=None."""
         if raw_metrics is None:
             return
-        self.posture_samples.append(raw_metrics)
+        self._posture_samples.append(raw_metrics)
 
-    def posture_capture_progress(self):
-        if not self.posture_started_at:
+    def posture_capture_progress(self) -> float:
+        """0.0 – 1.0"""
+        if self._capture_start is None:
             return 0.0
-        elapsed = time.time() - self.posture_started_at
-        return min(1.0, elapsed / self.sample_seconds)
+        return min(1.0, (time.time() - self._capture_start) / CAPTURE_SECONDS)
 
-    def posture_capture_done(self):
-        return (self.posture_started_at is not None and
-                time.time() - self.posture_started_at >= self.sample_seconds and
-                len(self.posture_samples) >= 5)
+    def posture_capture_done(self) -> bool:
+        return (
+            self._capture_start is not None
+            and time.time() - self._capture_start >= CAPTURE_SECONDS
+            and len(self._posture_samples) >= MIN_SAMPLES
+        )
 
-    def finalize_baseline(self):
-        """Compute median baseline values + tolerance bands from captured
-        samples. Falls back to population defaults if too few/noisy
-        samples were captured."""
-        if len(self.posture_samples) < 5:
-            self.baseline = None
+    def finalize_baseline(self) -> dict | None:
+        """Compute median baseline from collected samples.
+        Returns baseline dict, or None if too few samples."""
+        if len(self._posture_samples) < MIN_SAMPLES:
             return None
 
-        fha_vals   = [s['fha'] for s in self.posture_samples]
-        sh_vals    = [s['shoulder_tilt'] for s in self.posture_samples]
-        neck_vals  = [s['torso_inclination'] for s in self.posture_samples]
+        def med(key: str) -> float:
+            return float(np.median([s[key] for s in self._posture_samples]))
 
-        # Use median for robustness against momentary tracking glitches
-        baseline = {
-            'fha':            round(float(np.median(fha_vals)), 1),
-            'shoulder_tilt':  round(float(np.median(sh_vals)), 1),
-            'neck_tilt':      round(float(np.median(neck_vals)), 1),
-            # Tolerance = how far from baseline counts as "poor posture".
-            # Wider tolerance for FHA since head movement is natural;
-            # tighter for shoulder tilt which is usually more stable.
-            'fha_tol':        12.0,
-            'shoulder_tol':   6.0,
-            'neck_tol':       10.0,
-            'n_samples':      len(self.posture_samples),
+        self.baseline = {
+            "neck_tilt":           round(med("neck_tilt"), 2),
+            "shoulder_tilt":       round(med("shoulder_tilt"), 2),
+            "face_proximity":      round(med("face_proximity"), 4),
+            "neck_tilt_tol":       TOLERANCES["neck_tilt"],
+            "shoulder_tilt_tol":   TOLERANCES["shoulder_tilt"],
+            # For proximity: the threshold is the baseline value MINUS the
+            # tolerance, meaning the face must not come significantly CLOSER
+            # than the arm's-length baseline position.
+            "face_proximity_tol":  TOLERANCES["face_proximity"],
+            "n_samples":           len(self._posture_samples),
         }
-        self.baseline = baseline
-        self.stage = 'audio'
-        return baseline
+        audio_alerts.play_calibration_complete()
+        self.stage = "audio"
+        return self.baseline
 
-    # ── Stage 3: Audio test ─────────────────────────────────────────────
-    def run_audio_test(self):
+    # ── Stage 3 ─────────────────────────────────────────────────────────
+
+    def run_audio_test(self) -> bool:
         audio_alerts.test_chime()
         self.audio_tested = True
-        self.stage = 'done'
+        self.stage = "done"
         return audio_alerts.is_available()
 
-    def is_complete(self):
-        return self.stage == 'done' and self.baseline is not None
+    # ── Helpers ──────────────────────────────────────────────────────────
 
-    def summary(self):
+    def is_complete(self) -> bool:
+        return self.stage == "done" and self.baseline is not None
+
+    def summary(self) -> dict:
         return {
-            'stage': self.stage,
-            'lighting_ok': self.lighting_ok,
-            'lighting_message': self.lighting_message,
-            'baseline': self.baseline,
-            'audio_tested': self.audio_tested,
-            'audio_available': audio_alerts.is_available(),
+            "stage": self.stage,
+            "lighting": self.lighting_status(),
+            "lighting_ok": self.lighting_ok,
+            "lighting_message": self.lighting_message,
+            "baseline": self.baseline,
+            "audio_tested": self.audio_tested,
+            "audio_available": audio_alerts.is_available(),
+            "progress": self.posture_capture_progress(),
         }

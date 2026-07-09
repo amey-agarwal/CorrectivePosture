@@ -3,17 +3,12 @@
 Stuff that needs to be fixed
 - Errors in analyze_results.py
 - The data logging is only based on alerts
-- there is no adaptive feedback mechanism developed
 - the detection should end if the session ends
+- UI for final caliibration is off screen
 
 Things to add
-- PyAudio : test chime button
-- testing for the system lighting is fine, if it is able to detect posture errors
-- more postures to be incorporated
 - feedback in case posture is detected as bad but not as per user --> feedback button
 - running script that turns data logged to zip file for easy sharing for user
-- run baseline script that understands the 'normal' seating position of the user
-- chime if noo posture identified for long time
 
 Stuff to check before particpant starts study
 - correct python version
@@ -21,7 +16,6 @@ Stuff to check before particpant starts study
 - Video capture happens 
     - permissions for MacOS or Windows
     - browser permissions for MacOS or Windows
-- test a bad posture notification once
 - visual prompt if possible which can be dismissed --> guided tour type
 - tackling errors that may arise 
     - not enough visbility
@@ -47,8 +41,10 @@ Things to mention to user in writeup document
 - run for baseline script of normal seating position
 - chime if no posture identified for long time
 - sometimes the software fails on first run, the web cam doesnt work, requires software start again
+- System may be waiting for your input at the end of calibration, button may be offscreen
 
 Hyperparameters set for us to consider:
 - timeout for considering a postue alert is ignored : no response for 30s (app.py : line 296)
 - thresholds for posture (app.py : line 144)
 - number of bad posture identified for alert (app.py : line 277)
+- out of developomen debug=False

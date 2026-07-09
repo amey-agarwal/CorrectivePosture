@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PostureAware — Calibration</title>
+<style>
+  :root{
+    --bg:#0d0f14; --surface:#161921; --surface2:#1e2230;
+    --border:#2a2f3e; --accent:#4f8ef7; --accent2:#7c5af5;
+    --good:#22c55e; --warn:#f59e0b; --bad:#ef4444;
+    --text:#e8eaf0; --muted:#8892a4;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;
+       min-height:100vh;display:grid;grid-template-rows:54px 1fr;overflow:hidden}
+
+  /* ── Header ─────────────────────────────────────────────── */
+  .hdr{background:var(--surface);border-bottom:1px solid var(--border);
+       display:flex;align-items:center;padding:0 22px;gap:14px}
+  .hdr-logo{font-size:17px;font-weight:700}
+  .hdr-sub{font-size:12px;color:var(--muted)}
+
+  /* ── Layout ─────────────────────────────────────────────── */
+  .main{display:grid;grid-template-columns:1fr 380px;overflow:hidden}
+
+  /* ── Camera panel ────────────────────────────────────────── */
+  .cam-wrap{position:relative;background:#000;display:flex;align-items:center;justify-content:center}
+  .cam-feed{width:100%;height:100%;object-fit:cover}
+  .cam-overlay{position:absolute;inset:0;pointer-events:none}
+
+  /* Lighting indicator bar at top of camera */
+  .light-bar{
+    position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    background:rgba(13,15,20,.85);border:1px solid var(--border);
+    border-radius:100px;padding:7px 18px;font-size:13px;font-weight:600;
+    display:flex;align-items:center;gap:9px;white-space:nowrap;
+  }
+  .light-dot{width:10px;height:10px;border-radius:50%}
+  .dot-ok   {background:var(--good);box-shadow:0 0 6px var(--good)}
+  .dot-warn {background:var(--warn);animation:pulse 1s infinite}
+  .dot-unknown{background:var(--muted)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+  /* Countdown ring overlay during posture capture */
+  #captureRing{
+    position:absolute;bottom:22px;left:50%;transform:translateX(-50%);
+    display:none;
+  }
+  .ring-svg circle{transition:stroke-dashoffset .4s linear}
+
+  /* ── Sidebar ─────────────────────────────────────────────── */
+  .sidebar{background:var(--surface);border-left:1px solid var(--border);
+           overflow-y:auto;padding:22px;display:flex;flex-direction:column;gap:16px}
+
+  /* Progress steps */
+  .steps{display:flex;flex-direction:column;gap:0}
+  .step{display:flex;align-items:flex-start;gap:14px;padding:14px 0;
+        border-bottom:1px solid var(--border)}
+  .step:last-child{border-bottom:none}
+  .step-num{width:30px;height:30px;border-radius:50%;border:2px solid var(--border);
+            display:flex;align-items:center;justify-content:center;font-size:13px;
+            font-weight:700;flex-shrink:0;color:var(--muted);transition:all .3s}
+  .step-num.active{border-color:var(--accent);color:var(--accent);
+                   box-shadow:0 0 0 3px rgba(79,142,247,.15)}
+  .step-num.done{background:var(--good);border-color:var(--good);color:#fff}
+  .step-title{font-size:13px;font-weight:600;margin-bottom:4px}
+  .step-desc{font-size:12px;color:var(--muted);line-height:1.5}
+
+  /* Panel cards */
+  .panel{background:var(--surface2);border:1px solid var(--border);
+         border-radius:10px;padding:18px}
+  .panel-title{font-size:11px;font-weight:700;letter-spacing:1.2px;
+               text-transform:uppercase;color:var(--accent);margin-bottom:14px}
+
+  /* Instruction box */
+  .instruction{background:rgba(79,142,247,.07);border:1px solid rgba(79,142,247,.2);
+               border-radius:8px;padding:13px 15px;font-size:13px;color:var(--muted);
+               line-height:1.7;margin-bottom:16px}
+  .instruction strong{color:var(--text)}
+  .instruction ul{padding-left:16px;margin-top:6px}
+  .instruction ul li{margin-bottom:4px}
+
+  /* Buttons */
+  .btn{width:100%;padding:12px;border:none;border-radius:9px;font-size:14px;
+       font-weight:600;cursor:pointer;transition:opacity .15s}
+  .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+  .btn-primary:hover{opacity:.9}
+  .btn-primary:disabled{opacity:.35;cursor:not-allowed}
+  .btn-secondary{background:var(--surface);border:1px solid var(--border);color:var(--muted)}
+  .btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* Progress bar */
+  .prog-bg{height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin:10px 0}
+  .prog-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));
+             border-radius:4px;transition:width .5s linear}
+
+  /* Baseline values table */
+  .baseline-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+  .baseline-table th{color:var(--muted);font-weight:600;text-align:left;
+                      padding:5px 0;border-bottom:1px solid var(--border)}
+  .baseline-table td{padding:7px 0;border-bottom:1px solid rgba(42,47,62,.5);color:var(--text)}
+
+  /* Status message */
+  .status-msg{font-size:13px;line-height:1.5;padding:10px 12px;border-radius:7px;
+              background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2);color:var(--good);
+              display:none}
+  .status-msg.warn{background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.2);color:var(--warn)}
+  .status-msg.err{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:var(--bad)}
+
+  /* Audio indicator */
+  .audio-row{display:flex;align-items:center;gap:12px;padding:10px 0}
+  .audio-icon{font-size:22px}
+  .audio-label{font-size:13px;color:var(--muted)}
+  .audio-ok{color:var(--good);font-size:12px;font-weight:600;margin-left:auto;display:none}
+
+  /* Confirm panel (final step) */
+  #confirmPanel{display:none}
+  .confirm-hero{text-align:center;padding:18px 0 12px}
+  .confirm-hero .icon{font-size:44px;margin-bottom:10px}
+  .confirm-hero h2{font-size:18px;font-weight:700;margin-bottom:6px}
+  .confirm-hero p{font-size:13px;color:var(--muted);line-height:1.6}
+
+  /* Baseline summary in confirm panel */
+  .bl-summary{margin:14px 0;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .bl-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;
+          padding:10px;text-align:center}
+  .bl-val{font-size:18px;font-weight:700;color:var(--accent);line-height:1}
+  .bl-lbl{font-size:10px;color:var(--muted);margin-top:4px;line-height:1.3}
+</style>
+</head>
+<body>
+
+<header class="hdr">
+  <span class="hdr-logo">🧍 PostureAware</span>
+  <span class="hdr-sub">Calibration Setup</span>
+</header>
+
+<div class="main">
+
+  <!-- Camera panel -->
+  <div class="cam-wrap">
+    <img class="cam-feed" id="camFeed"
+         src="/video_feed/calibrate/{{ session_id }}"
+         onerror="showCamErr()">
+
+    <!-- Lighting badge -->
+    <div class="light-bar" id="lightBar">
+      <div class="light-dot dot-unknown" id="lightDot"></div>
+      <span id="lightText">Checking lighting…</span>
+    </div>
+
+    <!-- Countdown ring shown during posture capture -->
+    <div id="captureRing">
+      <svg width="80" height="80" viewBox="0 0 80 80" class="ring-svg">
+        <circle cx="40" cy="40" r="34" fill="rgba(13,15,20,.8)"
+                stroke="#2a2f3e" stroke-width="6"/>
+        <circle id="ringArc" cx="40" cy="40" r="34" fill="none"
+                stroke="#4f8ef7" stroke-width="6" stroke-linecap="round"
+                stroke-dasharray="213.6" stroke-dashoffset="213.6"
+                transform="rotate(-90 40 40)"/>
+        <text x="40" y="46" text-anchor="middle" fill="white"
+              font-size="18" font-weight="700" id="ringText">0%</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+
+    <!-- Step indicators -->
+    <div class="steps">
+      <div class="step">
+        <div class="step-num active" id="sn1">1</div>
+        <div>
+          <div class="step-title">Lighting Check</div>
+          <div class="step-desc">We verify the camera can see you clearly.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num" id="sn2">2</div>
+        <div>
+          <div class="step-title">Baseline Posture</div>
+          <div class="step-desc">Sit naturally at arm's length and we capture your neutral position.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num" id="sn3">3</div>
+        <div>
+          <div class="step-title">Audio Test</div>
+          <div class="step-desc">Confirm you can hear the posture-alert chime.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num" id="sn4">4</div>
+        <div>
+          <div class="step-title">Begin Session</div>
+          <div class="step-desc">Confirm to start the 30-minute study.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Stage 1 : Lighting ──────────────────────────────── -->
+    <div class="panel" id="lightingPanel">
+      <div class="panel-title">Step 1 — Lighting</div>
+      <div class="instruction">
+        <strong>Make sure:</strong>
+        <ul>
+          <li>You are well-lit from the front</li>
+          <li>No strong backlight (window behind you)</li>
+          <li>Face and shoulders are visible in the frame</li>
+        </ul>
+      </div>
+      <div class="prog-bg"><div class="prog-fill" id="lightProg" style="width:0%"></div></div>
+      <p id="lightMsg" style="font-size:12px;color:var(--muted);margin-bottom:12px">Sampling…</p>
+      <div class="status-msg" id="lightStatus"></div>
+      <button class="btn btn-primary" id="lightBtn" style="margin-top:12px" disabled
+              onclick="advanceToPosture()">
+        Continue →
+      </button>
+    </div>
+
+    <!-- ── Stage 2 : Posture capture ─────────────────────────── -->
+    <div class="panel" id="posturePanel" style="display:none">
+      <div class="panel-title">Step 2 — Baseline Posture</div>
+      <div class="instruction">
+        Sit the way you normally would while working at your computer.
+        <strong>Extend your arm</strong> — your screen should be at roughly arm's length.
+        Relax your shoulders. Look straight ahead.<br><br>
+        Press <strong>Start Capture</strong> when ready. Hold your position for
+        <strong>8 seconds</strong> — a chime will sound when done.
+      </div>
+      <div class="prog-bg"><div class="prog-fill" id="postureProg" style="width:0%"></div></div>
+      <p id="postureProgLabel" style="font-size:12px;color:var(--muted);margin-bottom:12px">0 %</p>
+      <div class="status-msg" id="postureStatus"></div>
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <button class="btn btn-primary" id="startCapBtn" onclick="startPostureCapture()">
+          Start Capture
+        </button>
+        <button class="btn btn-secondary" id="retryCapBtn" style="display:none"
+                onclick="retryPostureCapture()">
+          Retry
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Stage 3 : Audio ─────────────────────────────────── -->
+    <div class="panel" id="audioPanel" style="display:none">
+      <div class="panel-title">Step 3 — Audio Test</div>
+      <div class="instruction">
+        Make sure your <strong>device volume is turned up</strong>. Press the button
+        below to play the posture-alert chime. You should hear two descending tones.
+      </div>
+      <div class="audio-row">
+        <span class="audio-icon">🔔</span>
+        <span class="audio-label">Alert chime</span>
+        <span class="audio-ok" id="audioOkLabel">✓ Played</span>
+      </div>
+      <div class="status-msg warn" id="audioWarn" style="display:block;margin-bottom:12px">
+        If you cannot hear any sound, check your system volume or speakers.
+      </div>
+      <button class="btn btn-secondary" style="margin-bottom:10px" onclick="testAudio()">
+        ▶ Play Test Chime
+      </button>
+      <button class="btn btn-primary" id="audioNextBtn" disabled onclick="confirmStart()">
+        I Can Hear It — Begin Session →
+      </button>
+    </div>
+
+    <!-- ── Stage 4 : Confirm ──────────────────────────────── -->
+    <div class="panel" id="confirmPanel" style="overflow: auto;height: auto;">
+      <div class="confirm-hero">
+        <div class="icon">✅</div>
+        <h2>Calibration Complete</h2>
+        <p>Your personalised baseline has been saved.<br>
+           The system will compare your live posture against these values.</p>
+      </div>
+
+      <div class="bl-summary" id="blSummary">
+        <!-- filled by JS -->
+      </div>
+
+      <div class="instruction" style="margin-top:10px">
+        <strong>You're about to start the 30-minute study session.</strong><br>
+        Please perform your usual computer-based work. Stay seated and keep the
+        webcam unobstructed. You will hear a chime whenever posture correction
+        is needed.
+      </div>
+
+      <button class="btn btn-primary" style="margin-top:4px" id="goMonitorBtn"
+              onclick="goToMonitor()">
+        Start 30-Minute Session →
+      </button>
+    </div>
+
+  </aside>
+</div><!-- .main -->
+
+<script>
+const SID = "{{ session_id }}";
+let pollTimer = null;
+let captureTimer = null;
+let captureStarted = false;
+let captureFinished = false;
+let baseline = null;
+let audioTested = false;
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+async function pollStatus(){
+  let counter = 0
+  const r = await fetch(`/api/calibration/status/${SID}`, 
+  {
+    method: "POST"
+  }
+);
+  const d = await r.json();
+  return d;
+}
+
+console.log("lighting loop")
+
+// ── Stage 1 : Lighting ────────────────────────────────────────────────────────
+async function lightingLoop(){
+  const d = await pollStatus();
+  const ls = d.lighting_ok;
+  const pct = Math.min(100, (d.progress ?? 0) * 100);  // re-use summary progress field
+  // Drive the progress bar from sample count
+  console.log('api calibration lighting')
+  const lightProgress = fetch(`/api/calibration/status/${SID}`,{
+    method: "POST"
+  })
+    .then(r=>r.json())
+    .then(s=>{
+        console.log(s)
+      // lighting_status not directly in summary but we can infer from null→bool transition
+    });
+
+  const dot  = document.getElementById('lightDot');
+  const text = document.getElementById('lightText');
+  const msg  = document.getElementById('lightMsg');
+  const stat = document.getElementById('lightStatus');
+  const btn  = document.getElementById('lightBtn');
+  const prog = document.getElementById('lightProg');
+
+  if(ls === null){
+    dot.className='light-dot dot-unknown';
+    text.textContent='Checking lighting…';
+    prog.style.width='50%';
+    msg.textContent='Sampling…';
+    setTimeout(lightingLoop, 500);
+  } else {
+    prog.style.width='100%';
+    if(ls){
+      dot.className='light-dot dot-ok';
+      text.textContent='Lighting OK';
+      stat.className='status-msg';
+      stat.style.display='block';
+      stat.textContent = d.lighting_message || 'Lighting looks good ✓';
+      msg.textContent='Ready to continue.';
+      btn.disabled = false;
+    } else {
+      dot.className='light-dot dot-warn';
+      text.textContent='Lighting Issue';
+      stat.className='status-msg warn';
+      stat.style.display='block';
+      stat.textContent = d.lighting_message || 'Please improve your lighting.';
+      msg.textContent='Fix the lighting then reload this page.';
+      btn.disabled = true;
+    }
+  }
+}
+lightingLoop();
+
+async function advanceToPosture(){
+  markDone(1); markActive(2);
+  document.getElementById('lightingPanel').style.display='none';
+  document.getElementById('posturePanel').style.display='block';
+  document.getElementById('captureRing').style.display='none';
+}
+
+// ── Stage 2 : Posture capture ──────────────────────────────────────────────────
+async function startPostureCapture(){
+  if(captureStarted) return;
+  captureStarted = true;
+  document.getElementById('startCapBtn').disabled = true;
+
+  // Tell server to begin sampling
+  const r = await fetch(`/api/calibration/advance/${SID}`,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'start_posture'})
+  });
+  const d = await r.json();
+  if(!d.ok){ alert('Could not start capture. Try again.'); captureStarted=false; return; }
+
+  // Show ring
+  document.getElementById('captureRing').style.display='block';
+  pollCaptureProgress();
+}
+
+async function pollCaptureProgress(){
+  const d = await pollStatus();
+  const pct = Math.round((d.progress||0)*100);
+  const arc  = document.getElementById('ringArc');
+  const rtxt = document.getElementById('ringText');
+  const pb   = document.getElementById('postureProg');
+  const pl   = document.getElementById('postureProgLabel');
+
+  arc.style.strokeDashoffset = 213.6 - (213.6 * (d.progress||0));
+  rtxt.textContent = pct + '%';
+  pb.style.width = pct + '%';
+  pl.textContent  = pct + '%';
+
+  if(pct < 100){
+    setTimeout(pollCaptureProgress, 300);
+  } else {
+    // Finalise
+    const fr = await fetch(`/api/calibration/advance/${SID}`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'finalise'})
+    });
+    const fd = await fr.json();
+    document.getElementById('captureRing').style.display='none';
+
+    if(fd.ok){
+      baseline = fd.baseline;
+      captureFinished = true;
+      const st = document.getElementById('postureStatus');
+      st.className='status-msg'; st.style.display='block';
+      st.textContent='✓ Baseline captured successfully! Advancing to audio check…';
+      document.getElementById('retryCapBtn').style.display='none';
+      setTimeout(advanceToAudio, 1600);
+    } else {
+      const st = document.getElementById('postureStatus');
+      st.className='status-msg err'; st.style.display='block';
+      st.textContent = fd.error || 'Not enough data. Please try again.';
+      captureStarted = false;
+      document.getElementById('startCapBtn').disabled = false;
+      document.getElementById('retryCapBtn').style.display='inline-block';
+    }
+  }
+}
+
+function retryPostureCapture(){
+  captureStarted = false; captureFinished = false;
+  document.getElementById('postureStatus').style.display='none';
+  document.getElementById('postureProgLabel').textContent='0 %';
+  document.getElementById('postureProg').style.width='0%';
+  document.getElementById('startCapBtn').disabled = false;
+  document.getElementById('retryCapBtn').style.display='none';
+}
+
+// ── Stage 3 : Audio ───────────────────────────────────────────────────────────
+function advanceToAudio(){
+  markDone(2); markActive(3);
+  document.getElementById('posturePanel').style.display='none';
+  document.getElementById('audioPanel').style.display='block';
+}
+
+async function testAudio(){
+  const r = await fetch(`/api/calibration/advance/${SID}`,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'test_audio'})
+  });
+  const d = await r.json();
+  audioTested = true;
+  document.getElementById('audioOkLabel').style.display='inline';
+  document.getElementById('audioNextBtn').disabled = false;
+  document.getElementById('audioWarn').style.display='none';
+}
+
+// ── Stage 4 : Confirm ─────────────────────────────────────────────────────────
+function confirmStart(){
+  markDone(3); markActive(4);
+  document.getElementById('audioPanel').style.display='none';
+  document.getElementById('confirmPanel').style.display='block';
+
+  // Populate baseline summary
+  if(baseline){
+    const rows = [
+      {val: baseline.neck_tilt     + '°', lbl:'Neck Tilt\n(baseline)'},
+      {val: baseline.shoulder_tilt + '°', lbl:'Shoulder Tilt\n(baseline)'},
+      {val: baseline.face_proximity.toFixed(3), lbl:'Face Proximity\n(baseline)'},
+    ];
+    document.getElementById('blSummary').innerHTML = rows.map(r=>
+      `<div class="bl-box">
+         <div class="bl-val">${r.val}</div>
+         <div class="bl-lbl">${r.lbl.replace('\n','<br>')}</div>
+       </div>`
+    ).join('');
+  }
+}
+
+async function goToMonitor(){
+  const btn = document.getElementById('goMonitorBtn');
+  btn.disabled = true; btn.textContent = 'Starting…';
+  const r = await fetch(`/api/calibration/advance/${SID}`,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'confirm_start'})
+  });
+  const d = await r.json();
+  if(d.redirect) window.location.href = d.redirect;
+}
+
+// ── Step indicator helpers ────────────────────────────────────────────────────
+function markDone(n){
+  const el = document.getElementById('sn'+n);
+  el.className='step-num done'; el.textContent='✓';
+}
+function markActive(n){
+  document.getElementById('sn'+n).className='step-num active';
+}
+
+function showCamErr(){
+  document.getElementById('lightBar').innerHTML =
+    '<span style="color:var(--bad)">⚠ Camera not accessible — check browser permissions.</span>';
+}
+</script>
+</body>
+</html>
