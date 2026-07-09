@@ -3,13 +3,11 @@
 Stuff that needs to be fixed
 - The data logging is only based on alerts
 - the detection should end if the session ends
+- UI for final caliibration is off screen
 
 Things to add
-- testing for the system lighting is fine, if it is able to detect posture errors
-- more postures to be incorporated
 - feedback in case posture is detected as bad but not as per user --> feedback button
 - running script that turns data logged to zip file for easy sharing for user
-- run baseline script that understands the 'normal' seating position of the user
 
 Stuff to check before particpant starts study
 - correct python version
@@ -17,7 +15,6 @@ Stuff to check before particpant starts study
 - Video capture happens 
     - permissions for MacOS or Windows
     - browser permissions for MacOS or Windows
-- test a bad posture notification once
 - visual prompt if possible which can be dismissed --> guided tour type
 - tackling errors that may arise 
     - not enough visbility
@@ -46,6 +43,7 @@ Things to mention to user in writeup document
 - sometimes the software fails on first run, the web cam doesnt work, requires software start again
 - If you are having an annoying day or busy day, don't use the system. If you are bored and want to sit and do work but also have some fun maybe use the system
 - might detect a posture that is bad but may not be the same case for you
+- System may be waiting for your input at the end of calibration, button may be offscreen
 
 Hyperparameters set for us to consider:
 - timeout for considering a postue alert is ignored : no response for 30s (app.py : line 296)
@@ -57,3 +55,4 @@ Interesting thinga to mention
 - I don't remember where I read this but I recall this reply from a doctor to the question "Which is the best posture?"
 
 Answer: "The next one."
+- out of developomen debug=False

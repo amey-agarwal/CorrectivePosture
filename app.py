@@ -1,715 +1,754 @@
 """
 Adaptive Delayed Feedback System for Posture Improvement
 Flask + MediaPipe + WebSocket backend
+
+Session flow
+────────────
+  / (index)  →  /calibrate/<session_id>  →  /monitor/<session_id>
+                      ↑
+               created by POST /api/register
+
+Posture metrics (upper-body only — chest-and-above)
+────────────────────────────────────────────────────
+  1. Neck tilt        — angle of the head from the vertical (ear-to-shoulder)
+  2. Shoulder tilt    — horizontal roll of the shoulder line
+  3. Face proximity   — normalised distance from nose to mid-shoulder;
+                        a decreasing value means the participant is leaning
+                        closer to the screen (forward head / hunching).
+
+No cv2.imshow() or cv2.waitKey() are ever called — frames only leave
+this process as MJPEG bytes streamed to the browser.
 """
+
+from __future__ import annotations
+
+import csv
+import json
+import math
+import os
+import time
+from datetime import datetime
 
 import cv2
 import mediapipe as mp
 import numpy as np
-import json
-import time
-import math
-import os
-import csv
-from datetime import datetime
-from flask import Flask, render_template, Response, request, jsonify
+from flask import Flask, Response, jsonify, render_template, request
 from flask_socketio import SocketIO, emit
 
 import audio_alerts
 from calibration import CalibrationSession
 
+import eventlet
+
+# ── App setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'posture-study-secret'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+app.config["SECRET_KEY"] = "posture-study-2025"
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
-# How long (s) with no person/landmarks detected before we play the
-# "no person detected" chime, to nudge the participant back into frame.
-NO_PERSON_CHIME_AFTER_S = 25.0
-
-# ─── MediaPipe Setup ────────────────────────────────────────────────────────────
+# ── MediaPipe (single global instance, not thread-safe → one pose per process)
 mp_pose = mp.solutions.pose
-mp_face_mesh = mp.solutions.face_mesh
-mp_drawing = mp.solutions.drawing_utils
-
+mp_draw  = mp.solutions.drawing_utils
 pose = mp_pose.Pose(
-    min_detection_confidence=0.6,
-    min_tracking_confidence=0.6,
-    model_complexity=1
+    min_detection_confidence=0.65,
+    min_tracking_confidence=0.65,
+    model_complexity=1,
 )
 
-# ─── Session State ───────────────────────────────────────────────────────────────
-sessions = {}
-
-calibrations = {}   # session_id -> CalibrationSession (pre-study calibration in progress)
+# How long with no landmarks before the "are-you-there" chime fires
+NO_PERSON_CHIME_S: float = 25.0
 
 
-def create_session(participant_id, condition, age=None, gender=None, baseline=None):
-    """Initialize a new participant session."""
+# ── Shared webcam singleton ──────────────────────────────────────────────────
+class _Webcam:
+    """
+    Reference-counted wrapper around a single cv2.VideoCapture so both the
+    calibration and the live-monitor MJPEG routes share one device handle.
+    Never calls imshow / waitKey → no extra window ever opens.
+    """
+
+    def __init__(self) -> None:
+        self._cap: cv2.VideoCapture | None = None
+        self._refs: int = 0
+
+    def acquire(self) -> cv2.VideoCapture:
+        if self._cap is None or not self._cap.isOpened():
+            self._cap = cv2.VideoCapture(0)
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self._cap.set(cv2.CAP_PROP_FPS, 24)
+        self._refs += 1
+        return self._cap
+
+    def release(self) -> None:
+        self._refs = max(0, self._refs - 1)
+        if self._refs == 0 and self._cap is not None:
+            self._cap.release()
+            self._cap = None
+
+    def read(self):
+        if self._cap is None:
+            return False, None
+        return self._cap.read()
+
+
+webcam = _Webcam()
+
+# ── In-memory session stores ─────────────────────────────────────────────────
+sessions: dict[str, dict]              = {}
+calibrations: dict[str, CalibrationSession] = {}
+
+
+# ── Session factory ───────────────────────────────────────────────────────────
+def _new_session(pid: str, condition: str,
+                 age=None, gender=None, baseline=None) -> dict:
     return {
-        'participant_id': participant_id,
-        'condition': condition,  # 'immediate' or 'adaptive'
-        'age': age,
-        'gender': gender,
-        'start_time': time.time(),
-        'end_time': None,
+        "participant_id": pid,
+        "condition": condition,           # "immediate" | "adaptive"
+        "age": age,
+        "gender": gender,
+        "start_time": time.time(),
+        "end_time": None,
+        "baseline": baseline,             # personalised thresholds from calibration
 
-        # Personalised posture baseline from calibration (or None = use defaults)
-        'baseline': baseline,
+        # Posture state
+        "posture_good": True,
+        "bad_start": None,
+        "total_poor_s": 0.0,
 
-        # Posture tracking
-        'current_posture_good': True,
-        'posture_bad_start': None,
-        'total_poor_posture_duration': 0.0,
+        # No-person tracking
+        "last_seen": time.time(),
+        "no_person_chimed": False,
 
-        # No-person-detected tracking (for the "are you still there" chime)
-        'last_person_seen_at': time.time(),
-        'no_person_chime_played': False,
+        # Alert state
+        "alert_active": False,
+        "alert_shown_at": None,
+        "last_alert_time": None,
+        "correction_pending": False,
 
-        # Feedback state
-        'feedback_active': False,
-        'feedback_shown_at': None,
-        'last_alert_time': None,
-        'correction_pending': False,
+        # Adaptive delay
+        "delay": 5.0,
+        "delay_min": 2.0,
+        "delay_max": 20.0,
+        "alpha": 0.30,
 
-        # Adaptive delay parameters
-        'current_delay_threshold': 5.0,   # seconds; starts at 5s
-        'min_delay': 2.0,
-        'max_delay': 20.0,
-        'alpha': 0.3,                     # EWM smoothing factor
+        # Logging
+        "alerts": [],
+        "current_alert": None,
+        "n_alerts": 0,
+        "latencies": [],
+        "n_ignored": 0,
 
-        # Per-alert log
-        'alerts': [],
-        'current_alert': None,
-
-        # Metrics
-        'total_alerts': 0,
-        'response_latencies': [],
-        'ignored_alerts': 0,   # alerts where user didn't correct within 30s
-
-        # Session metrics snapshots (every 30s)
-        'metric_snapshots': [],
-
-        'active': False,
+        "active": False,
     }
 
 
-# ─── Posture Analysis ─────────────────────────────────────────────────────────
-def compute_angle(a, b, c):
-    """Angle at vertex b formed by segments ba and bc (degrees)."""
+# ╔══════════════════════════════════════════════════════════════════════════════
+# ║  POSTURE ANALYSIS — upper-body only (chest and above)
+# ╚══════════════════════════════════════════════════════════════════════════════
+
+def _angle(a, b, c) -> float:
+    """Angle at vertex b in the triangle a-b-c, in degrees."""
     a, b, c = np.array(a), np.array(b), np.array(c)
-    ba = a - b
-    bc = c - b
-    cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
-    return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
+    ba, bc = a - b, c - b
+    cos = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-9)
+    return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
 
 
-def analyze_posture(landmarks, image_w, image_h,baseline=None):
+def analyze_posture(landmarks, w: int, h: int, baseline: dict | None = None) -> dict | None:
     """
-    Extract posture metrics from MediaPipe Pose landmarks using ONLY
-    upper-body landmarks (nose, ears, shoulders). Hips/torso are NOT
-    required, so the metrics work even when only the chest-and-above
-    region of the participant is visible on camera.
+    Extract the three study metrics from upper-body pose landmarks.
 
-    If `baseline` is provided (dict with 'fha', 'shoulder_tilt', 'neck_tilt'
-    keys captured during calibration), thresholds are computed relative to
-    the participant's own neutral sitting posture rather than fixed
-    population defaults.
+    Metrics
+    -------
+    neck_tilt        — angle of the mid-ear → mid-shoulder segment from
+                       vertical.  0° = perfectly upright; grows as the
+                       head juts forward or tilts to the side.
+    shoulder_tilt    — horizontal roll angle of the shoulder line.
+                       0° = level; grows as one shoulder rises/drops.
+    face_proximity   — normalised distance between nose tip and
+                       mid-shoulder point (using normalised landmark
+                       coordinates in [0,1]).  Smaller value ≡ face
+                       closer to camera / screen.
 
-    Returns a dict with metric values and an overall 'good' boolean, or
-    None if not enough upper-body landmarks are visible.
+    Requires only: NOSE, LEFT_EAR, RIGHT_EAR, LEFT_SHOULDER,
+                   RIGHT_SHOULDER.  No hips needed. Cause no Shakira.
+
+    Returns None if visibility of any key landmark is < 0.55.
     """
-    #print("==================Entered analyze_posture==================")
     lm = landmarks.landmark
 
-    def pt(idx):
-        return [lm[idx].x * image_w, lm[idx].y * image_h]
-    
-    # Key points — chest and above only
-
-    # Key points
-    nose       = pt(mp_pose.PoseLandmark.NOSE)
-    left_ear   = pt(mp_pose.PoseLandmark.LEFT_EAR)
-    right_ear  = pt(mp_pose.PoseLandmark.RIGHT_EAR)
-    left_sh    = pt(mp_pose.PoseLandmark.LEFT_SHOULDER)
-    right_sh   = pt(mp_pose.PoseLandmark.RIGHT_SHOULDER)
-    # left_hip   = pt(mp_pose.PoseLandmark.LEFT_HIP)
-    # right_hip  = pt(mp_pose.PoseLandmark.RIGHT_HIP)
-
-    # Visibility check — only require nose, ears, shoulders (no hips)
-    key_indices = [
+    KEY = [
         mp_pose.PoseLandmark.NOSE,
         mp_pose.PoseLandmark.LEFT_EAR,
         mp_pose.PoseLandmark.RIGHT_EAR,
         mp_pose.PoseLandmark.LEFT_SHOULDER,
         mp_pose.PoseLandmark.RIGHT_SHOULDER,
-        # mp_pose.PoseLandmark.LEFT_HIP,
-        # mp_pose.PoseLandmark.RIGHT_HIP,
     ]
-    visibilities = [lm[i].visibility for i in key_indices]
-    min_vis = min(visibilities)
-    min_vis = min(lm[i].visibility for i in key_indices)
-    if min_vis < 0.5:
-        print("Not enough visibility")
-        return None  # Not enough visibility of the upper body
+    if min(lm[k].visibility for k in KEY) < 0.55:
+        return None
 
-    # ── Metric 1: Forward-head angle ──────────────────────────────────
-    # Mid-ear → mid-shoulder vertical deviation
-    mid_ear = [(left_ear[0] + right_ear[0]) / 2, (left_ear[1] + right_ear[1]) / 2]
-    mid_sh  = [(left_sh[0] + right_sh[0]) / 2,  (left_sh[1] + right_sh[1]) / 2]
+    def px(k):
+        return [lm[k].x * w, lm[k].y * h]
 
-    # ── Metric 1: Forward-head angle ──────────────────────────────────
-    # Mid-ear → mid-shoulder vertical deviation. Close to 0 = upright,
-    # increases as the head juts forward relative to the shoulder line.
+    def norm(k):
+        return [lm[k].x, lm[k].y]  # normalised coords for distance metric
 
-    # Reference vertical above mid_sh
-    vertical_ref = [mid_sh[0], mid_sh[1] - 100]
-    fha = compute_angle(mid_ear, mid_sh, vertical_ref)
-    # fha close to 0 = upright, increases as head moves forward
+    nose_px  = px(mp_pose.PoseLandmark.NOSE)
+    l_ear    = px(mp_pose.PoseLandmark.LEFT_EAR)
+    r_ear    = px(mp_pose.PoseLandmark.RIGHT_EAR)
+    l_sh     = px(mp_pose.PoseLandmark.LEFT_SHOULDER)
+    r_sh     = px(mp_pose.PoseLandmark.RIGHT_SHOULDER)
 
-    # ── Metric 2: Shoulder alignment (horizontal tilt) ────────────────
-    sh_dx = abs(left_sh[0] - right_sh[0])
-    sh_dy = abs(left_sh[1] - right_sh[1])
-    shoulder_tilt = math.degrees(math.atan2(sh_dy, sh_dx + 1e-6))
-    # Near 0 = level shoulders; increases as one shoulder rises/falls
+    mid_ear  = [(l_ear[0] + r_ear[0]) / 2, (l_ear[1] + r_ear[1]) / 2]
+    mid_sh   = [(l_sh[0]  + r_sh[0])  / 2, (l_sh[1]  + r_sh[1])  / 2]
 
-    ######### REMOVING METRIC 3
-    # ── Metric 3: Torso inclination ───────────────────────────────────
-    # mid_hip = [(left_hip[0] + right_hip[0]) / 2, (left_hip[1] + right_hip[1]) / 2]
-    # torso_dx = mid_sh[0] - mid_hip[0]
-    # torso_dy = mid_sh[1] - mid_hip[1]
-    # # Angle of torso from vertical (should be near 0 when sitting upright)
-    # torso_inclination = abs(math.degrees(math.atan2(torso_dx, -torso_dy + 1e-6)))
-    ######### REMOVING OLD CLASSIFICATION THRESHOLDS
-    # # ── Classification thresholds ──────────────────────────────────────
-    # FHA_THRESHOLD         = 25.0   # degrees forward head
-    # SHOULDER_THRESHOLD    = 10.0   # degrees tilt
-    # TORSO_THRESHOLD       = 15.0   # degrees lean
+    # ── Metric 1: Neck tilt ────────────────────────────────────────────
+    # Angle between the ear-to-shoulder segment and vertical.
+    vert_ref = [mid_sh[0], mid_sh[1] - 100]
+    neck_tilt = _angle(mid_ear, mid_sh, vert_ref)
 
+    # ── Metric 2: Shoulder tilt (roll) ────────────────────────────────
+    dx = abs(l_sh[0] - r_sh[0])
+    dy = abs(l_sh[1] - r_sh[1])
+    shoulder_tilt = math.degrees(math.atan2(dy, dx + 1e-9))
 
-    # ── Metric 3: Neck/torso inclination (upper-body-only proxy) ──────
-    # Without hip landmarks we can't measure full torso lean, so this
-    # uses the shoulder-line midpoint to nose angle from vertical as a
-    # proxy for upper-torso/neck inclination (slouching toward the
-    # screen tilts this line forward).
-    horiz_ref = [mid_sh[0] + 100, mid_sh[1]]
-    neck_tilt = abs(90 - compute_angle(nose, mid_sh, horiz_ref))
+    # ── Metric 3: Face proximity ───────────────────────────────────────
+    # Use normalised landmark coords so the metric is independent of
+    # frame resolution.  Distance decreases as person leans forward.
+    nose_n  = norm(mp_pose.PoseLandmark.NOSE)
+    l_sh_n  = norm(mp_pose.PoseLandmark.LEFT_SHOULDER)
+    r_sh_n  = norm(mp_pose.PoseLandmark.RIGHT_SHOULDER)
+    mid_sh_n = [(l_sh_n[0] + r_sh_n[0]) / 2, (l_sh_n[1] + r_sh_n[1]) / 2]
+    face_proximity = math.hypot(
+        nose_n[0] - mid_sh_n[0],
+        nose_n[1] - mid_sh_n[1],
+    )
 
-    # ── Thresholds: baseline-relative if available, else population default ──
+    # ── Thresholds ──────────────────────────────────────────────────────
     if baseline:
-        FHA_THRESHOLD      = baseline['fha']           + baseline.get('fha_tol', 12.0)
-        SHOULDER_THRESHOLD = baseline['shoulder_tilt']  + baseline.get('shoulder_tol', 6.0)
-        NECK_THRESHOLD      = baseline['neck_tilt']      + baseline.get('neck_tol', 10.0)
+        neck_thresh  = baseline["neck_tilt"]      + baseline["neck_tilt_tol"]
+        sh_thresh    = baseline["shoulder_tilt"]  + baseline["shoulder_tilt_tol"]
+        # Proximity: bad when face is significantly CLOSER than baseline
+        prox_thresh  = baseline["face_proximity"] - baseline["face_proximity_tol"]
     else:
-        FHA_THRESHOLD      = 25.0
-        SHOULDER_THRESHOLD = 10.0
-        NECK_THRESHOLD      = 15.0
+        neck_thresh  = 22.0
+        sh_thresh    = 10.0
+        prox_thresh  = 0.28   # if face_proximity drops below this → too close
 
-    fha_bad       = fha > FHA_THRESHOLD
-    sh_bad        = shoulder_tilt > SHOULDER_THRESHOLD
-    neck_bad      = neck_tilt > NECK_THRESHOLD
-    #torso_bad     = torso_inclination > TORSO_THRESHOLD
+    neck_bad  = neck_tilt    > neck_thresh
+    sh_bad    = shoulder_tilt > sh_thresh
+    prox_bad  = face_proximity < prox_thresh
 
-    if fha_bad:
-        print("Forward head bad posture detected")
-    if sh_bad:
-        print("tilt bad posture detected")
-    if neck_bad:
-        print("neck bad posture detected")
-    # if torso_bad:
-    #     print("lean bad psoture detected")
+    n_bad = sum([neck_bad, sh_bad, prox_bad])
+    good  = not (n_bad >= 2 or neck_tilt > neck_thresh + 12 or prox_bad) # number of bad posture out of 3
 
-    # # Overall: bad if any two or more metrics are bad, or FHA alone is very bad
-    # issues = sum([fha_bad, sh_bad, torso_bad])
-    # posture_good = not (issues >= 2 or fha > 35)
-
-    # Overall: bad if 2+ metrics bad, or FHA alone far beyond threshold
-    issues = sum([fha_bad, sh_bad, neck_bad])
-    posture_good = not (issues >= 1 or fha > FHA_THRESHOLD + 10)
-
-    # # Compute a 0-100 score (100 = perfect)
-    # fha_score     = max(0, 100 - (fha / FHA_THRESHOLD) * 50)
-    # sh_score      = max(0, 100 - (shoulder_tilt / SHOULDER_THRESHOLD) * 50)
-    # torso_score   = max(0, 100 - (torso_inclination / TORSO_THRESHOLD) * 50)
-    # overall_score = int((fha_score * 0.5 + sh_score * 0.25 + torso_score * 0.25))
-
-    # 0-100 score (100 = perfect), scaled relative to active thresholds
-    fha_score   = max(0, 100 - (fha / FHA_THRESHOLD) * 50)
-    sh_score    = max(0, 100 - (shoulder_tilt / SHOULDER_THRESHOLD) * 50)
-    neck_score  = max(0, 100 - (neck_tilt / NECK_THRESHOLD) * 50)
-    overall_score = int((fha_score * 0.5 + sh_score * 0.25 + neck_score * 0.25))
-
-    overall_score = max(0, min(100, overall_score))
+    # Composite score 0-100
+    neck_score  = max(0, 100 - (neck_tilt  / neck_thresh)  * 50)
+    sh_score    = max(0, 100 - (shoulder_tilt / sh_thresh) * 50)
+    # Proximity score: 100 when at or beyond baseline distance; drops as closer
+    prox_ratio  = max(0.0, face_proximity / max(prox_thresh, 0.01))
+    prox_score  = min(100, prox_ratio * 70)
+    score       = int(neck_score * 0.45 + sh_score * 0.30 + prox_score * 0.25)
+    score       = max(0, min(100, score))
 
     return {
-        'good': posture_good,
-        'score': overall_score,
-        'fha': round(fha, 1),
-        'shoulder_tilt': round(shoulder_tilt, 1),
-        #'torso_inclination': round(torso_inclination, 1),
-        'torso_inclination': round(neck_tilt, 1),   # kept key name for UI/CSV compatibility
-        'fha_bad': fha_bad,
-        'sh_bad': sh_bad,
-        #'torso_bad': torso_bad,
-        'torso_bad': neck_bad,
-        'min_visibility': round(min_vis, 2),
+        "good":           good,
+        "score":          score,
+        "neck_tilt":      round(neck_tilt,      1),
+        "shoulder_tilt":  round(shoulder_tilt,  1),
+        "face_proximity": round(face_proximity,  3),
+        "neck_bad":       neck_bad,
+        "sh_bad":         sh_bad,
+        "prox_bad":       prox_bad,
+        "min_vis":        round(min(lm[k].visibility for k in KEY), 2),
+        # Expose thresholds so the UI can draw reference lines
+        "thresh_neck":    round(neck_thresh,  1),
+        "thresh_sh":      round(sh_thresh,    1),
+        "thresh_prox":    round(prox_thresh,  3),
     }
 
 
-# ─── Adaptive Delay Engine ────────────────────────────────────────────────────
-def update_delay_threshold(session, response_latency):
-    """
-    Exponentially weighted moving average adjustment of delay threshold.
-    - Fast responders (latency < threshold) → delay increases (fewer alerts)
-    - Slow/ignored responders → delay decreases (more frequent alerts)
-    """
-    alpha = session['alpha']
-    current = session['current_delay_threshold']
+# ╔══════════════════════════════════════════════════════════════════════════════
+# ║  ADAPTIVE DELAY ENGINE
+# ╚══════════════════════════════════════════════════════════════════════════════
 
-    if response_latency is None:
-        # Ignored: decrease delay significantly
-        target = current * 0.7
-    elif response_latency < current:
-        # Responded quickly relative to threshold: reward with longer delay
-        ratio = response_latency / current
-        target = current * (1 + (1 - ratio) * 0.5)
-    else:
-        # Slow response: decrease delay
-        target = current * 0.85
-
-    new_threshold = alpha * target + (1 - alpha) * current
-    new_threshold = max(session['min_delay'], min(session['max_delay'], new_threshold))
-    session['current_delay_threshold'] = round(new_threshold, 2)
-    return new_threshold
+def _update_delay(sess: dict, latency: float | None) -> None:
+    """Exponentially weighted update of the inter-alert delay threshold."""
+    a, cur = sess["alpha"], sess["delay"]
+    if latency is None:               # ignored: shorten delay
+        target = cur * 0.70
+    elif latency < cur:               # fast response: lengthen delay
+        target = cur * (1 + (1 - latency / cur) * 0.50)
+    else:                             # slow response: shorten delay
+        target = cur * 0.85
+    sess["delay"] = round(
+        max(sess["delay_min"],
+            min(sess["delay_max"], a * target + (1 - a) * cur)), 2)
 
 
-# ─── Feedback Decision Logic ──────────────────────────────────────────────────
-def process_posture_update(session_id, posture_data, timestamp):
+# ╔══════════════════════════════════════════════════════════════════════════════
+# ║  FEEDBACK STATE MACHINE
+# ╚══════════════════════════════════════════════════════════════════════════════
+
+def _process_posture(session_id: str, p: dict, ts: float) -> dict:
     """
-    Core state machine: decides when to fire alerts based on condition.
-    Returns dict of actions to push to client.
+    Core per-frame decision logic.
+    Returns a dict of 'actions' to push to the browser via SocketIO.
     """
-    if session_id not in sessions:
+    sess = sessions.get(session_id)
+    if not sess or not sess["active"]:
         return {}
 
-    sess = sessions[session_id]
-    if not sess['active']:
-        return {}
+    sess["last_seen"]      = ts
+    sess["no_person_chimed"] = False
+    actions: dict = {}
 
-    actions = {}
-    posture_good = posture_data['good']
+    good = p["good"]
 
-    # Person is visible this frame — reset the "missing" tracker
-    sess['last_person_seen_at'] = timestamp
-    sess['no_person_chime_played'] = False
+    # good→bad
+    if not good and sess["posture_good"]:
+        sess["bad_start"]   = ts
+        sess["posture_good"] = False
 
-    # ── Transition: good → bad ────────────────────────────────────────
-    if not posture_good and sess['current_posture_good']:
-        sess['posture_bad_start'] = timestamp
-        sess['current_posture_good'] = False
+    # bad→good
+    elif good and not sess["posture_good"]:
+        if sess["bad_start"]:
+            sess["total_poor_s"] += ts - sess["bad_start"]
+            sess["bad_start"] = None
 
-    # ── Transition: bad → good ────────────────────────────────────────
-    elif posture_good and not sess['current_posture_good']:
-        # Accumulate poor posture duration
-        if sess['posture_bad_start']:
-            duration = timestamp - sess['posture_bad_start']
-            sess['total_poor_posture_duration'] += duration
-            sess['posture_bad_start'] = None
+        if sess["correction_pending"] and sess["alert_shown_at"]:
+            lat = round(ts - sess["alert_shown_at"], 2)
+            sess["latencies"].append(lat)
+            if sess["current_alert"]:
+                sess["current_alert"].update(
+                    corrected=True, latency=lat, correction_time=ts)
+                sess["alerts"].append(sess["current_alert"])
+                sess["current_alert"] = None
+            if sess["condition"] == "adaptive":
+                _update_delay(sess, lat)
+            sess["correction_pending"] = False
+            sess["alert_active"]       = False
+            actions["hide_alert"]      = True
+            actions["latency"]         = lat
+            actions["new_delay"]       = sess["delay"]
+            audio_alerts.play_correction_success()
 
-        # Log correction latency if feedback was pending
-        if sess['correction_pending'] and sess['feedback_shown_at']:
-            latency = timestamp - sess['feedback_shown_at']
-            sess['response_latencies'].append(round(latency, 2))
+        sess["posture_good"] = True
 
-            if sess['current_alert']:
-                sess['current_alert']['correction_time'] = timestamp
-                sess['current_alert']['latency'] = round(latency, 2)
-                sess['current_alert']['corrected'] = True
-                sess['alerts'].append(sess['current_alert'])
-                sess['current_alert'] = None
+    # Should we fire an alert?
+    if not good and not sess["alert_active"]:
+        bad_dur = ts - (sess["bad_start"] or ts)
+        threshold = 1.0 if sess["condition"] == "immediate" else sess["delay"]
 
-            # Update adaptive delay for adaptive condition
-            if sess['condition'] == 'adaptive':
-                update_delay_threshold(sess, latency)
-
-            sess['correction_pending'] = False
-            sess['feedback_active'] = False
-            actions['hide_alert'] = True
-            actions['latency_recorded'] = round(latency, 2)
-            actions['new_delay'] = round(sess['current_delay_threshold'], 1)
-
-        sess['current_posture_good'] = True
-
-    # ── Check if alert should fire ─────────────────────────────────────
-    if not posture_good and not sess['feedback_active']:
-        bad_duration = timestamp - (sess['posture_bad_start'] or timestamp)
-
-        if sess['condition'] == 'immediate':
-            should_alert = bad_duration >= 1.0  # 1s grace period
-        else:  # adaptive
-            should_alert = bad_duration >= sess['current_delay_threshold']
-
-        if should_alert:
-            # Rate limit: don't re-alert within 3 seconds
-            if not sess['last_alert_time'] or (timestamp - sess['last_alert_time']) >= 3.0:
-                sess['feedback_active'] = True
-                sess['feedback_shown_at'] = timestamp
-                sess['last_alert_time'] = timestamp
-                sess['correction_pending'] = True
-                sess['total_alerts'] += 1
-
-                alert_record = {
-                    'alert_id': sess['total_alerts'],
-                    'shown_at': timestamp,
-                    'condition': sess['condition'],
-                    'delay_threshold': sess['current_delay_threshold'],
-                    'corrected': False,
-                    'latency': None,
+        if bad_dur >= threshold:
+            gap = ts - (sess["last_alert_time"] or 0)
+            if gap >= sess["delay"]:
+                sess["alert_active"]   = True
+                sess["alert_shown_at"] = ts
+                sess["last_alert_time"] = ts
+                sess["correction_pending"] = True
+                sess["n_alerts"] += 1
+                sess["current_alert"] = {
+                    "alert_id": sess["n_alerts"],
+                    "shown_at": ts,
+                    "condition": sess["condition"],
+                    "delay_threshold": sess["delay"],
+                    "corrected": False,
+                    "latency": None,
                 }
-                sess['current_alert'] = alert_record
-
-                actions['show_alert'] = True
-                actions['alert_id'] = sess['total_alerts']
-                actions['current_delay'] = round(sess['current_delay_threshold'], 1)
-
+                actions["show_alert"] = True
+                actions["alert_id"]   = sess["n_alerts"]
+                actions["delay"]      = sess["delay"]
                 audio_alerts.play_posture_alert()
 
-    # ── Check for ignored alert (timeout at 30s) ───────────────────────
-    if sess['feedback_active'] and sess['feedback_shown_at']:
-        time_since_alert = timestamp - sess['feedback_shown_at']
-        if time_since_alert > 6.0 and sess['correction_pending']:
-            sess['ignored_alerts'] += 1
-            if sess['current_alert']:
-                sess['current_alert']['corrected'] = False
-                sess['current_alert']['latency'] = None
-                sess['alerts'].append(sess['current_alert'])
-                sess['current_alert'] = None
-
-            # Adaptive: reduce delay even more for ignored
-            if sess['condition'] == 'adaptive':
-                update_delay_threshold(sess, None)
-                actions['new_delay'] = round(sess['current_delay_threshold'], 1)
-
-            sess['correction_pending'] = False
-            sess['feedback_active'] = False
-            actions['alert_expired'] = True
+    # Alert timeout (10 s ignored)
+    if sess["alert_active"] and sess["alert_shown_at"]:
+        if ts - sess["alert_shown_at"] > 10.0 and sess["correction_pending"]:
+            sess["n_ignored"] += 1
+            if sess["current_alert"]:
+                sess["alerts"].append(sess["current_alert"])
+                sess["current_alert"] = None
+            if sess["condition"] == "adaptive":
+                _update_delay(sess, None)
+                actions["new_delay"] = sess["delay"]
+            sess["correction_pending"] = False
+            sess["alert_active"]       = False
+            actions["alert_expired"]   = True
 
     return actions
 
-def handle_no_person_detected(session_id, timestamp):
-    """
-    Called on frames where MediaPipe found no pose landmarks at all, or
-    visibility was too low for analyze_posture() to return a result
-    (e.g. participant stepped away, or only lower body is in frame).
-    Plays a reminder chime if this persists past NO_PERSON_CHIME_AFTER_S.
-    """
-    if session_id not in sessions:
-        return
-    sess = sessions[session_id]
-    if not sess['active']:
-        return
 
-    elapsed_missing = timestamp - sess['last_person_seen_at']
-    if elapsed_missing >= NO_PERSON_CHIME_AFTER_S and not sess['no_person_chime_played']:
+def _no_person(session_id: str, ts: float) -> None:
+    sess = sessions.get(session_id)
+    if not sess or not sess["active"]:
+        return
+    if ts - sess["last_seen"] >= NO_PERSON_CHIME_S and not sess["no_person_chimed"]:
         audio_alerts.play_no_person_detected()
-        sess['no_person_chime_played'] = True
+        sess["no_person_chimed"] = True
 
 
-# ─── Shared Webcam Manager ────────────────────────────────────────────────────
-class WebcamManager:
-    """
-    Single shared cv2.VideoCapture instance, reference-counted so both the
-    calibration step and the live monitoring stream can read frames from
-    the same camera handle without each opening their own device (which
-    fails or pops up duplicate device-access prompts on some systems).
-    No cv2.imshow/waitKey are ever called — frames only ever leave this
-    process as MJPEG bytes over HTTP, so no separate window is opened.
-    """
-    def __init__(self):
-        self.cap = None
-        self.ref_count = 0
-
-    def acquire(self):
-        if self.cap is None or not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(0)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_FPS, 24)
-        self.ref_count += 1
-        return self.cap
-
-    def release(self):
-        self.ref_count = max(0, self.ref_count - 1)
-        if self.ref_count == 0 and self.cap is not None:
-            self.cap.release()
-            self.cap = None
-
-    def read(self):
-        if self.cap is None:
-            return False, None
-        return self.cap.read()
-
-
-webcam = WebcamManager()
-
-
-
-# ─── Video Stream ─────────────────────────────────────────────────────────────
-def generate_frames(session_id):
-    """Generator that yields annotated MJPEG frames."""
-    cap = webcam.acquire()
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 24)
-
-    last_emit = 0
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Failed to grab frame")
-            break
-        
-        # NOTE: Do NOT call cv2.imshow/waitKey on the server.
-        # The monitor.html page displays this MJPEG stream via <img>.
-        frame = cv2.flip(frame, 1)
-        h, w = frame.shape[:2]
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(rgb)
-
-        posture_data = None
-        if results.pose_landmarks:
-            posture_data = analyze_posture(results.pose_landmarks, w, h)
-
-            if posture_data:
-                # Draw skeleton overlay
-                color = (0, 220, 80) if posture_data['good'] else (50, 50, 255)
-                mp_drawing.draw_landmarks(
-                    frame,
-                    results.pose_landmarks,
-                    mp_pose.POSE_CONNECTIONS,
-                    mp_drawing.DrawingSpec(color=color, thickness=2, circle_radius=3),
-                    mp_drawing.DrawingSpec(color=color, thickness=2)
-                )
-
-                # Score badge
-                score_text = f"Score: {posture_data['score']}"
-                cv2.rectangle(frame, (8, 8), (175, 42), (0, 0, 0), -1)
-                cv2.putText(frame, score_text, (14, 32),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
-
-                # Emit posture update via SocketIO (throttled to 5 Hz)
-                now = time.time()
-                if now - last_emit > 0.2:
-                    last_emit = now
-                    actions = process_posture_update(session_id, posture_data, now)
-                    #print("POSTURE UPDATE EMITTED****************************")
-                    socketio.emit('posture_update', {
-                        'posture': posture_data,
-                        'actions': actions,
-                        'timestamp': now,
-                        'session_metrics': get_live_metrics(session_id),
-                    })
-                    socketio.sleep(2) #non-blocking sleep required by eventlet/gevent
-                    #print(sessions[session_id])
-
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' +
-               buffer.tobytes() + b'\r\n')
-
-        # (No cv2.waitKey/break here; browser consumes frames over HTTP.)
-        # if cv2.waitKey(1) & 0xFF == ord('q'):
-        #     break
-
-    webcam.release()
-    # cv2.destroyAllWindows()  # no local window opened in server mode
-
-
-def get_live_metrics(session_id):
-    if session_id not in sessions:
+def _live_metrics(session_id: str) -> dict:
+    sess = sessions.get(session_id, {})
+    if not sess:
         return {}
-    sess = sessions[session_id]
-    elapsed = time.time() - sess['start_time'] if sess['start_time'] else 0
-    avg_latency = (sum(sess['response_latencies']) / len(sess['response_latencies'])
-                   if sess['response_latencies'] else None)
+    elapsed  = time.time() - sess["start_time"]
+    avg_lat  = round(sum(sess["latencies"]) / len(sess["latencies"]), 1) \
+               if sess["latencies"] else None
     return {
-        'elapsed': round(elapsed, 0),
-        'total_alerts': sess['total_alerts'],
-        'avg_latency': round(avg_latency, 1) if avg_latency else None,
-        'total_poor_duration': round(sess['total_poor_posture_duration'], 1),
-        'current_delay': round(sess['current_delay_threshold'], 1),
-        'condition': sess['condition'],
-        'ignored': sess['ignored_alerts'],
+        "elapsed":      round(elapsed, 0),
+        "n_alerts":     sess["n_alerts"],
+        "avg_latency":  avg_lat,
+        "poor_s":       round(sess["total_poor_s"], 1),
+        "delay":        round(sess["delay"], 1),
+        "condition":    sess["condition"],
+        "n_ignored":    sess["n_ignored"],
     }
 
-def user_data_calibration():
-    user_calibration = CalibrationSession()
-    user_calibration.add_lighting_frame()
-    user_calibration.start_posture_capture()
+
+# ╔══════════════════════════════════════════════════════════════════════════════
+# ║  MJPEG GENERATORS
+# ╚══════════════════════════════════════════════════════════════════════════════
+
+def _encode(frame) -> bytes:
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+            + buf.tobytes() + b"\r\n")
 
 
-# ─── CSV Data Export ──────────────────────────────────────────────────────────
-def save_session_data(session_id):
-    if session_id not in sessions:
-        return
-    sess = sessions[session_id]
+def _gen_calibration(session_id: str):
+    """MJPEG stream used on the calibration page — feeds frames into the
+    CalibrationSession and overlays status text."""
+    cal = calibrations.get(session_id)
+    print("Generator ",id(cal))
+    cap = webcam.acquire()
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame = cv2.flip(frame, 1)
+            h, w  = frame.shape[:2]
+            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    os.makedirs('data', exist_ok=True)
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    pid = sess['participant_id']
+            # Lighting stage: just sample raw frames
+            if cal and cal.stage == "lighting":
+                cal.add_lighting_frame(frame)
+                cv2.putText(frame, "Checking lighting…", (14, 34),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 200, 0), 2)
 
-    # Alert log CSV
+            # Posture stage: run MediaPipe and collect samples
+            elif cal and cal.stage == "posture":
+                res = pose.process(rgb)
+                if res.pose_landmarks:
+                    metrics = analyze_posture(res.pose_landmarks, w, h)
+                    cal.add_posture_sample(metrics)
+                    print(len(cal._posture_samples))
+                    mp_draw.draw_landmarks(
+                        frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+                        mp_draw.DrawingSpec((100, 220, 100), 2, 3),
+                        mp_draw.DrawingSpec((100, 220, 100), 2),
+                    )
+                    pct = int(cal.posture_capture_progress() * 100)
+                    cv2.putText(frame, f"Capturing baseline… {pct}%", (14, 34),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.70, (100, 220, 100), 2)
+
+            yield _encode(frame)
+            eventlet.sleep(0.01)
+    finally:
+        webcam.release()
+
+
+def _gen_monitor(session_id: str):
+    """MJPEG stream used on the monitor page — full posture analysis loop."""
+    sess = sessions.get(session_id)
+    baseline = sess["baseline"] if sess else None
+    cap      = webcam.acquire()
+    last_emit = 0.0
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame = cv2.flip(frame, 1)
+            h, w  = frame.shape[:2]
+            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res   = pose.process(rgb)
+            now   = time.time()
+
+            p = None
+            if res.pose_landmarks:
+                p = analyze_posture(res.pose_landmarks, w, h, baseline)
+                if p:
+                    colour = (0, 210, 70) if p["good"] else (50, 50, 240)
+                    mp_draw.draw_landmarks(
+                        frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+                        mp_draw.DrawingSpec(colour, 2, 3),
+                        mp_draw.DrawingSpec(colour, 2),
+                    )
+                    cv2.rectangle(frame, (6, 6), (180, 40), (0, 0, 0), -1)
+                    cv2.putText(frame, f"Score: {p['score']}", (12, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.72, colour, 2)
+
+            if now - last_emit > 0.20:   # emit at ~5 Hz
+                last_emit = now
+                if p:
+                    actions = _process_posture(session_id, p, now)
+                    socketio.emit("posture_update", {
+                        "posture":  p,
+                        "actions":  actions,
+                        "metrics":  _live_metrics(session_id),
+                        "ts":       now,
+                    })
+                else:
+                    _no_person(session_id, now)
+                    socketio.emit("posture_update", {
+                        "posture":  None,
+                        "actions":  {},
+                        "metrics":  _live_metrics(session_id),
+                        "ts":       now,
+                    })
+
+            yield _encode(frame)
+            eventlet.sleep(0.01)
+    finally:
+        webcam.release()
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════
+# ║  DATA EXPORT
+# ╚══════════════════════════════════════════════════════════════════════════════
+
+def _save_session(session_id: str):
+    sess = sessions.get(session_id)
+    if not sess:
+        return None, None, None
+    os.makedirs("data", exist_ok=True)
+    ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+    pid = sess["participant_id"]
+
     alert_path = f"data/{pid}_{sess['condition']}_{ts}_alerts.csv"
-    with open(alert_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            'alert_id', 'shown_at', 'condition', 'delay_threshold',
-            'corrected', 'latency', 'correction_time'
-        ])
-        writer.writeheader()
-        for a in sess['alerts']:
-            writer.writerow({
-                'alert_id': a.get('alert_id'),
-                'shown_at': round(a.get('shown_at', 0), 3),
-                'condition': a.get('condition'),
-                'delay_threshold': a.get('delay_threshold'),
-                'corrected': a.get('corrected'),
-                'latency': a.get('latency'),
-                'correction_time': round(a.get('correction_time', 0), 3) if a.get('correction_time') else None,
+    with open(alert_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=[
+            "alert_id", "shown_at", "condition", "delay_threshold",
+            "corrected", "latency", "correction_time"])
+        w.writeheader()
+        for a in sess["alerts"]:
+            w.writerow({
+                "alert_id":        a.get("alert_id"),
+                "shown_at":        round(a.get("shown_at", 0), 3),
+                "condition":       a.get("condition"),
+                "delay_threshold": a.get("delay_threshold"),
+                "corrected":       a.get("corrected"),
+                "latency":         a.get("latency"),
+                "correction_time": round(a.get("correction_time", 0), 3)
+                                   if a.get("correction_time") else None,
             })
 
-    # Summary JSON
-    elapsed = (sess['end_time'] or time.time()) - sess['start_time']
+    elapsed = (sess["end_time"] or time.time()) - sess["start_time"]
+    lats    = sess["latencies"]
     summary = {
-        'participant_id': pid,
-        'condition': sess['condition'],
-        'age': sess['age'],
-        'gender': sess['gender'],
-        'session_duration_s': round(elapsed, 1),
-        'total_alerts': sess['total_alerts'],
-        'ignored_alerts': sess['ignored_alerts'],
-        'total_poor_posture_s': round(sess['total_poor_posture_duration'], 1),
-        'pct_time_poor_posture': round(
-            sess['total_poor_posture_duration'] / elapsed * 100, 1) if elapsed > 0 else 0,
-        'response_latencies': sess['response_latencies'],
-        'avg_latency_s': round(sum(sess['response_latencies']) / len(sess['response_latencies']), 2)
-            if sess['response_latencies'] else None,
-        'median_latency_s': round(float(np.median(sess['response_latencies'])), 2)
-            if sess['response_latencies'] else None,
-        'final_delay_threshold': sess['current_delay_threshold'],
+        "participant_id":       pid,
+        "condition":            sess["condition"],
+        "age":                  sess["age"],
+        "gender":               sess["gender"],
+        "baseline":             sess["baseline"],
+        "session_duration_s":   round(elapsed, 1),
+        "total_alerts":         sess["n_alerts"],
+        "ignored_alerts":       sess["n_ignored"],
+        "total_poor_s":         round(sess["total_poor_s"], 1),
+        "pct_time_poor_posture":             round(sess["total_poor_s"] / elapsed * 100, 1)
+                                if elapsed > 0 else 0,
+        "latencies":            lats,
+        "avg_latency_s":        round(sum(lats) / len(lats), 2) if lats else None,
+        "median_latency_s":     round(float(np.median(lats)), 2) if lats else None,
+        "final_delay":          sess["delay"],
     }
-    summary_path = f"data/{pid}_{sess['condition']}_{ts}_summary.json"
-    with open(summary_path, 'w') as f:
+    sum_path = f"data/{pid}_{sess['condition']}_{ts}_summary.json"
+    with open(sum_path, "w") as f:
         json.dump(summary, f, indent=2)
+    return summary, alert_path, sum_path
 
-    return summary, alert_path, summary_path
 
+# ╔══════════════════════════════════════════════════════════════════════════════
+# ║  ROUTES
+# ╚══════════════════════════════════════════════════════════════════════════════
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
 
-@app.route('/monitor/<session_id>')
+
+@app.route("/calibrate/<session_id>")
+def calibrate(session_id):
+    if session_id not in calibrations:
+        return "Session not found.", 404
+    return render_template("calibration.html", session_id=session_id)
+
+
+@app.route("/monitor/<session_id>")
 def monitor(session_id):
     if session_id not in sessions:
         return "Session not found.", 404
     sess = sessions[session_id]
-    return render_template('monitor.html', session=sess, session_id=session_id)
+    return render_template("monitor.html", session=sess, session_id=session_id)
 
-@app.route('/questionnaire/<session_id>')
+
+@app.route("/questionnaire/<session_id>")
 def questionnaire(session_id):
     if session_id not in sessions:
         return "Session not found.", 404
-    return render_template('questionnaire.html', session_id=session_id)
+    return render_template("questionnaire.html", session_id=session_id)
 
-@app.route('/results/<session_id>')
+
+@app.route("/results/<session_id>")
 def results(session_id):
     if session_id not in sessions:
         return "Session not found.", 404
-    summary, _, _ = save_session_data(session_id)
-    return render_template('results.html', summary=summary, session_id=session_id)
+    summary, _, _ = _save_session(session_id)
+    return render_template("results.html", summary=summary, session_id=session_id)
 
-@app.route('/video_feed/<session_id>')
-def video_feed(session_id):
-    return Response(generate_frames(session_id),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
-# ─── API Endpoints ────────────────────────────────────────────────────────────
-@app.route('/api/start_session', methods=['POST'])
-def start_session():
+# ── Video feeds ───────────────────────────────────────────────────────────────
 
-    # user_data_calibration()
+@app.route("/video_feed/calibrate/<session_id>")
+def video_feed_calibrate(session_id):
+    print("video feed calbrate entered")
+    return Response(_gen_calibration(session_id),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
 
+
+@app.route("/video_feed/monitor/<session_id>")
+def video_feed_monitor(session_id):
+    return Response(_gen_monitor(session_id),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+# ── API ───────────────────────────────────────────────────────────────────────
+
+@app.route("/api/register", methods=["POST"])
+def api_register():
+    """Create a pending session + calibration object; redirect target is
+    /calibrate/<session_id>."""
+    d    = request.json
+    pid  = d.get("participant_id", f"P{int(time.time())}")
+    cond = d.get("condition", "immediate")
+    sid  = f"{pid}_{cond}_{int(time.time())}"
+
+    calibrations[sid] = CalibrationSession()
+    # Session created but NOT yet active — activated after calibration
+    sessions[sid] = _new_session(pid, cond, d.get("age"), d.get("gender"))
+
+    return jsonify({"session_id": sid, "redirect": f"/calibrate/{sid}"})
+
+
+@app.route("/api/calibration/status/<session_id>", methods=["POST"])
+def api_cal_status(session_id):
+    print("entered cal status")
+    cal = calibrations.get(session_id)
+    print("entered cal status 1")
+    if not cal:
+        return jsonify({"error": "not found"}), 404
+    print("entered cal status 2")
+    print("Status id cal",id(cal))
+    print("Cal summary",cal.summary())
+    return jsonify(cal.summary())
+
+
+@app.route("/api/calibration/advance/<session_id>", methods=["POST"])
+def api_cal_advance(session_id):
+    """
+    Called by the calibration page JS at each stage transition:
+      stage=lighting  → begin posture capture
+      stage=posture   → finalise baseline, advance to audio
+      stage=audio     → play chime test
+      stage=done      → activate session, redirect to monitor
+    """
+    cal  = calibrations.get(session_id)
+    sess = sessions.get(session_id)
+    if not cal or not sess:
+        return jsonify({"error": "not found"}), 404
+
+    action = request.json.get("action", "")
+
+    if action == "start_posture":
+        cal.start_posture_capture()
+        return jsonify({"ok": True, "stage": cal.stage})
+
+    if action == "finalise":
+        baseline = cal.finalize_baseline()
+        if baseline is None:
+            return jsonify({"ok": False,
+                            "error": "Not enough posture samples — please retry."}), 400
+        sess["baseline"] = baseline
+        return jsonify({"ok": True, "stage": cal.stage, "baseline": baseline})
+
+    if action == "test_audio":
+        cal.run_audio_test()
+        return jsonify({"ok": True, "stage": cal.stage,
+                        "audio_available": audio_alerts.is_available()})
+
+    if action == "confirm_start":
+        sess["active"] = True
+        sess["start_time"] = time.time()
+        return jsonify({"ok": True, "redirect": f"/monitor/{session_id}"})
+
+    return jsonify({"error": f"unknown action '{action}'"}), 400
+
+
+@app.route("/api/stop_session/<session_id>", methods=["POST"])
+def api_stop(session_id):
+    sess = sessions.get(session_id)
+    if not sess:
+        return jsonify({"error": "not found"}), 404
+    sess["active"]   = False
+    sess["end_time"] = time.time()
+    audio_alerts.play_session_end()
+    return jsonify({"status": "stopped", "metrics": _live_metrics(session_id)})
+
+
+@app.route("/api/submit_questionnaire/<session_id>", methods=["POST"])
+def api_questionnaire(session_id):
+    sess = sessions.get(session_id)
+    if not sess:
+        return jsonify({"error": "not found"}), 404
     data = request.json
-    participant_id = data.get('participant_id', f"P{int(time.time())}")
-    condition = data.get('condition', 'immediate')  # 'immediate' or 'adaptive'
-    age = data.get('age')
-    gender = data.get('gender')
-
-    session_id = f"{participant_id}_{condition}_{int(time.time())}"
-
-    sessions[session_id] = create_session(participant_id, condition, age, gender,calibrations)
-    sessions[session_id]['active'] = True
-
-    return jsonify({'session_id': session_id, 'status': 'started'})
-
-@app.route('/api/stop_session/<session_id>', methods=['POST'])
-def stop_session(session_id):
-    if session_id not in sessions:
-        return jsonify({'error': 'Session not found'}), 404
-    sessions[session_id]['active'] = False
-    sessions[session_id]['end_time'] = time.time()
-    metrics = get_live_metrics(session_id)
-    return jsonify({'status': 'stopped', 'metrics': metrics})
-
-@app.route('/api/submit_questionnaire/<session_id>', methods=['POST'])
-def submit_questionnaire(session_id):
-    if session_id not in sessions:
-        return jsonify({'error': 'Session not found'}), 404
-    data = request.json
-    sessions[session_id]['questionnaire'] = data
-
-    # Append questionnaire to summary on save
-    summary, _, summary_path = save_session_data(session_id)
-    summary['questionnaire'] = data
-    with open(summary_path, 'w') as f:
+    sess["questionnaire"] = data
+    summary, _, sp = _save_session(session_id)
+    summary["questionnaire"] = data
+    with open(sp, "w") as f:
         json.dump(summary, f, indent=2)
-
-    return jsonify({'status': 'saved', 'redirect': f'/results/{session_id}'})
-
-@app.route('/api/metrics/<session_id>')
-def get_metrics(session_id):
-    return jsonify(get_live_metrics(session_id))
-
-@app.route('/api/export/<session_id>')
-def export_data(session_id):
-    if session_id not in sessions:
-        return jsonify({'error': 'not found'}), 404
-    summary, alert_path, summary_path = save_session_data(session_id)
-    return jsonify({
-        'summary': summary,
-        'files': {'alerts': alert_path, 'summary': summary_path}
-    })
+    return jsonify({"status": "saved"})
 
 
-# ─── SocketIO Events ──────────────────────────────────────────────────────────
-@socketio.on('connect')
-def on_connect():
-    emit('connected', {'status': 'ok'})
+@app.route("/api/export/<session_id>")
+def api_export(session_id):
+    summary, ap, sp = _save_session(session_id)
+    if summary is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"summary": summary, "files": {"alerts": ap, "summary": sp}})
 
-@socketio.on('join_session')
-def on_join(data):
-    session_id = data.get('session_id')
-    emit('session_joined', {'session_id': session_id, 'status': 'ok'})
 
-# @socketio.on('posture_update')
-# def on_posture_update(data):
-#     print("Posture update called")
-#     print("Received:",data.posture," ",data.actions," ",data.timestamp," ",data.session_metrics)
+# ── SocketIO ──────────────────────────────────────────────────────────────────
 
-if __name__ == '__main__':
-    os.makedirs('data', exist_ok=True)
+@socketio.on("connect")
+def _on_connect():
+    emit("connected", {"ok": True})
+
+
+@socketio.on("join_session")
+def _on_join(data):
+    emit("session_joined", {"session_id": data.get("session_id")})
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    os.makedirs("data", exist_ok=True)
     print("=" * 60)
-    print("  Posture Study System")
-    print("  Open http://localhost:5000 in your browser")
+    print("  PostureAware — Adaptive Feedback Study System")
+    print("  http://localhost:5000")
     print("=" * 60)
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True) 
+    # out of developomen debug=False
