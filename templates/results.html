@@ -209,7 +209,7 @@
     <div class="card">
       <div class="card-title">Session Details</div>
       <span class="cond-badge {{ 'cond-immediate' if summary.condition == 'immediate' else 'cond-adaptive' }}">
-        {{ 'Immediate Feedback' if summary.condition == 'immediate' else 'Adaptive Delayed Feedback' }}
+        {{ 'Cohort A' if summary.condition == 'immediate' else 'Cohort B' }}
       </span>
       <div class="info-row"><span class="k">Participant ID</span><span class="v">{{ summary.participant_id }}</span></div>
       <div class="info-row"><span class="k">Duration</span><span class="v">{{ (summary.session_duration_s // 60) | int }}m {{ (summary.session_duration_s % 60) | int }}s</span></div>
@@ -270,7 +270,7 @@
     {% endif %}
 
     <!-- Raw Data Preview -->
-    <div class="card card-full">
+    <!-- <div class="card card-full">
       <div class="card-title">Exported Data Summary</div>
       <div class="data-box">
         <span class="key">participant_id:    </span><span class="val">{{ summary.participant_id }}</span><br>
@@ -290,7 +290,7 @@
         <br><span class="key">usability:         </span><span class="val"> {{ summary.questionnaire.score_usability }}</span>
         <br><span class="key">willingness:       </span><span class="val"> {{ summary.questionnaire.score_willingness }}</span>
         {% endif %}
-      </div>
+      </div> -->
       <p class="saved-note" style="margin-top:10px;">
         <strong>✓ Data saved</strong> to <code>data/</code> folder as CSV + JSON
       </p>

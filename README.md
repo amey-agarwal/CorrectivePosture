@@ -56,3 +56,13 @@ Interesting thinga to mention
 
 Answer: "The next one."
 - out of developomen debug=False
+
+Things to consider 
+- if the user is told that his posture is to be monitored for correction, the use pruposely tries to not resort to a bad posture
+- if the user isnt told the point of the system, then he wont understand the reason behind the beeps if making a bad posture
+- the user should know that the system makes beeps, it makes beeps if a bad posture is detected, let it be up to the user to correct their posture
+    - then tell the user, prolonged bad posture may cause periodic beeps, correcting the posture may help in this regard
+- goal of the system to correct the user ? aware the user ? challenge the user ? 
+-peple correct themselves just to not hear the beep ? 
+- if we tell the user that the machine can be wrong in predicting the bad posture than some bad posture positions would be considered as false positives by the user and give annoyance
+- mention the point of the study is to get the natural seating flow of the person when doing their work, how their posture changes with the work and if this posture can be corrected

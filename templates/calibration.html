@@ -202,6 +202,9 @@
 
     <!-- ── Stage 1 : Lighting ──────────────────────────────── -->
     <div class="panel" id="lightingPanel">
+      <div style="justify-content:center; display:flex; margin-bottom:3px">
+        MESSAGE
+      </div>
       <div class="panel-title">Step 1 — Lighting</div>
       <div class="instruction">
         <strong>Make sure:</strong>
@@ -222,6 +225,9 @@
 
     <!-- ── Stage 2 : Posture capture ─────────────────────────── -->
     <div class="panel" id="posturePanel" style="display:none">
+      <div style="justify-content:center; display:flex; margin-bottom:3px">
+        MESSAGE
+      </div>
       <div class="panel-title">Step 2 — Baseline Posture</div>
       <div class="instruction">
         Sit the way you normally would while working at your computer.
@@ -246,6 +252,9 @@
 
     <!-- ── Stage 3 : Audio ─────────────────────────────────── -->
     <div class="panel" id="audioPanel" style="display:none">
+      <div style="justify-content:center; display:flex; margin-bottom:3px">
+        MESSAGE
+      </div>
       <div class="panel-title">Step 3 — Audio Test</div>
       <div class="instruction">
         Make sure your <strong>device volume is turned up</strong>. Press the button
@@ -269,22 +278,23 @@
 
     <!-- ── Stage 4 : Confirm ──────────────────────────────── -->
     <div class="panel" id="confirmPanel" style="overflow: auto;height: auto;">
+      <div style="justify-content:center; display:flex; margin-bottom:3px">
+        MESSAGE
+      </div>
       <div class="confirm-hero">
         <div class="icon">✅</div>
         <h2>Calibration Complete</h2>
-        <p>Your personalised baseline has been saved.<br>
-           The system will compare your live posture against these values.</p>
+        <p>Your calibrated values have been saved.</p>
       </div>
 
-      <div class="bl-summary" id="blSummary">
+      <!-- <div class="bl-summary" id="blSummary"> -->
         <!-- filled by JS -->
-      </div>
+      <!-- </div> -->
 
-      <div class="instruction" style="margin-top:10px">
+      <div class="instruction">
         <strong>You're about to start the 30-minute study session.</strong><br>
         Please perform your usual computer-based work. Stay seated and keep the
-        webcam unobstructed. You will hear a chime whenever posture correction
-        is needed.
+        webcam unobstructed. You will hear a chime to make you aware of detrimental posture.
       </div>
 
       <button class="btn btn-primary" style="margin-top:4px" id="goMonitorBtn"
@@ -475,6 +485,7 @@ function confirmStart(){
   document.getElementById('confirmPanel').style.display='block';
 
   // Populate baseline summary
+  /*
   if(baseline){
     const rows = [
       {val: baseline.neck_tilt     + '°', lbl:'Neck Tilt\n(baseline)'},
@@ -488,6 +499,7 @@ function confirmStart(){
        </div>`
     ).join('');
   }
+    */
 }
 
 async function goToMonitor(){

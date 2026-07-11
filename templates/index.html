@@ -61,11 +61,11 @@
   <div class="logo">
     <div class="logo-icon">🧍</div>
     <h1>PostureAware</h1>
-    <p>Adaptive Feedback Study — Participant Registration</p>
+    <p>Health Sensing Study — Participant Registration</p>
   </div>
 
   <div class="card">
-    <p class="section-lbl">Participant Details</p>
+    <p class="section-lbl">Anonymous Participant Details</p>
 
     <div class="fg"><label>Participant ID</label>
       <input id="pid" placeholder="e.g. P01" autocomplete="off"></div>
@@ -82,26 +82,25 @@
     </div>
 
     <hr>
-    <p class="section-lbl">Study Condition</p>
+    <p class="section-lbl">Study Cohort</p>
     <div class="cond-grid">
       <label class="cond-card" id="c-imm">
         <input type="radio" name="cond" value="immediate" onchange="pick('immediate')">
-        <span class="badge bi">Baseline</span>
-        <h3>Immediate Feedback</h3>
-        <p>Alert fires as soon as poor posture is detected.</p>
+        <span class="badge bi">Cohort A</span>
+        <h3>Pick this for Cohort A</h3>
       </label>
       <label class="cond-card" id="c-adp">
         <input type="radio" name="cond" value="adaptive" onchange="pick('adaptive')">
-        <span class="badge ba">Adaptive</span>
-        <h3>Adaptive Delayed</h3>
-        <p>Alert timing adjusts based on your response history.</p>
+        <span class="badge ba">Cohort B</span>
+        <h3>Pick this for Cohort B</h3>
       </label>
     </div>
 
     <div class="info">
-      <strong>What happens next:</strong> After registering you will be guided through a
+      <strong>What's next ?:</strong> After registering you will be guided through a
       <strong>calibration step</strong> (~1 min) where the system learns your normal sitting
-      position. The <strong>30-minute</strong> monitoring session follows immediately after.
+      position. The <strong>30-minute</strong> monitoring session follows immediately after.<br/>
+      Thanks so much for participating!
     </div>
 
     <button class="btn" id="startBtn" onclick="register()">Register & Start Calibration →</button>

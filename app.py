@@ -42,9 +42,30 @@ import eventlet
 
 # ── App setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "posture-study-2025"
+app.config["SECRET_KEY"] = "posture-study-2026"
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+QUESTIONNAIRE_MASTER_CSV = os.path.join(DATA_DIR, "questionnaire_responses.csv")
+
+QUESTIONNAIRE_FIELDS = [
+    "participant_id", "condition", "age", "gender", "session_duration_s",
+    "total_alerts", "ignored_alerts", "avg_latency_s", "median_latency_s",
+    "pct_time_poor_posture", "final_delay",
+    # Likert items
+    "helpfulness_aware", "helpfulness_useful", "helpfulness_motivated",
+    "annoyance_disruptive", "annoyance_frequency", "annoyance_ignored",
+    "usability_easy", "usability_clear", "usability_comfort",
+    "willingness_daily", "willingness_recommend", "willingness_timing",
+    # Computed subscale averages (from JS)
+    "score_helpfulness", "score_annoyance", "score_usability", "score_willingness",
+    # Open-ended
+    "open_helpful", "open_improve", "open_other",
+    # Metadata
+    "submitted_at",
+]
+
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # ── MediaPipe (single global instance, not thread-safe → one pose per process)
@@ -481,15 +502,16 @@ def _gen_monitor(session_id: str):
             if res.pose_landmarks:
                 p = analyze_posture(res.pose_landmarks, w, h, baseline)
                 if p:
-                    colour = (0, 210, 70) if p["good"] else (50, 50, 240)
-                    mp_draw.draw_landmarks(
-                        frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-                        mp_draw.DrawingSpec(colour, 2, 3),
-                        mp_draw.DrawingSpec(colour, 2),
-                    )
-                    cv2.rectangle(frame, (6, 6), (180, 40), (0, 0, 0), -1)
-                    cv2.putText(frame, f"Score: {p['score']}", (12, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.72, colour, 2)
+                    pass
+                    # colour = (0, 210, 70) if p["good"] else (50, 50, 240)
+                    # mp_draw.draw_landmarks(
+                    #     frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+                    #     mp_draw.DrawingSpec(colour, 2, 3),
+                    #     mp_draw.DrawingSpec(colour, 2),
+                    # )
+                    # cv2.rectangle(frame, (6, 6), (180, 40), (0, 0, 0), -1)
+                    # cv2.putText(frame, f"Score: {p['score']}", (12, 30),
+                    #             cv2.FONT_HERSHEY_SIMPLEX, 0.72, colour, 2)
 
             if now - last_emit > 0.20:   # emit at ~5 Hz
                 last_emit = now
@@ -521,21 +543,34 @@ def _gen_monitor(session_id: str):
 # ╚══════════════════════════════════════════════════════════════════════════════
 
 def _save_session(session_id: str):
+    """
+    Write per-session objective data (alert log CSV + summary JSON).
+    Called once when the session ends (api_stop) or when /results is loaded.
+    Does NOT include questionnaire data — that is handled by _save_questionnaire.
+    Returns (summary_dict, alert_csv_path, summary_json_path).
+    """
     sess = sessions.get(session_id)
     if not sess:
         return None, None, None
-    os.makedirs("data", exist_ok=True)
-    ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pid = sess["participant_id"]
-
-    alert_path = f"data/{pid}_{sess['condition']}_{ts}_alerts.csv"
+ 
+    os.makedirs(DATA_DIR, exist_ok=True)
+    pid  = sess["participant_id"]
+    cond = sess["condition"]
+ 
+    # Use a fixed filename per session (no timestamp) so repeated calls
+    # to _save_session overwrite rather than creating duplicate files.
+    alert_path = os.path.join(DATA_DIR, f"{pid}_{cond}_alerts.csv")
+    sum_path   = os.path.join(DATA_DIR, f"{pid}_{cond}_summary.json")
+ 
+    # ── Alert log CSV ─────────────────────────────────────────────────
     with open(alert_path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=[
+        writer = csv.DictWriter(f, fieldnames=[
             "alert_id", "shown_at", "condition", "delay_threshold",
-            "corrected", "latency", "correction_time"])
-        w.writeheader()
+            "corrected", "latency", "correction_time",
+        ])
+        writer.writeheader()
         for a in sess["alerts"]:
-            w.writerow({
+            writer.writerow({
                 "alert_id":        a.get("alert_id"),
                 "shown_at":        round(a.get("shown_at", 0), 3),
                 "condition":       a.get("condition"),
@@ -545,31 +580,117 @@ def _save_session(session_id: str):
                 "correction_time": round(a.get("correction_time", 0), 3)
                                    if a.get("correction_time") else None,
             })
-
-    elapsed = (sess["end_time"] or time.time()) - sess["start_time"]
+ 
+    # ── Summary JSON ──────────────────────────────────────────────────
+    elapsed = (sess.get("end_time") or time.time()) - sess["start_time"]
     lats    = sess["latencies"]
     summary = {
-        "participant_id":       pid,
-        "condition":            sess["condition"],
-        "age":                  sess["age"],
-        "gender":               sess["gender"],
-        "baseline":             sess["baseline"],
-        "session_duration_s":   round(elapsed, 1),
-        "total_alerts":         sess["n_alerts"],
-        "ignored_alerts":       sess["n_ignored"],
-        "total_poor_s":         round(sess["total_poor_s"], 1),
-        "pct_time_poor_posture":             round(sess["total_poor_s"] / elapsed * 100, 1)
-                                if elapsed > 0 else 0,
-        "latencies":            lats,
-        "avg_latency_s":        round(sum(lats) / len(lats), 2) if lats else None,
-        "median_latency_s":     round(float(np.median(lats)), 2) if lats else None,
-        "final_delay":          sess["delay"],
+        "participant_id":     pid,
+        "condition":          cond,
+        "age":                sess.get("age"),
+        "gender":             sess.get("gender"),
+        "baseline":           sess.get("baseline"),
+        "session_duration_s": round(elapsed, 1),
+        "total_alerts":       sess["n_alerts"],
+        "ignored_alerts":     sess["n_ignored"],
+        "total_poor_s":       round(sess["total_poor_s"], 1),
+        "pct_time_poor_posture":           round(sess["total_poor_s"] / elapsed * 100, 1)
+                              if elapsed > 0 else 0,
+        "latencies":          lats,
+        "avg_latency_s":      round(sum(lats) / len(lats), 2) if lats else None,
+        "median_latency_s":   round(float(np.median(lats)), 2) if lats else None,
+        "final_delay":        sess["delay"],
+        # questionnaire field starts empty; filled by _save_questionnaire
+        "questionnaire":      sess.get("questionnaire"),
     }
-    sum_path = f"data/{pid}_{sess['condition']}_{ts}_summary.json"
+ 
     with open(sum_path, "w") as f:
         json.dump(summary, f, indent=2)
+ 
     return summary, alert_path, sum_path
 
+def _save_questionnaire(session_id: str, q_data: dict):
+    """
+    Called immediately when the participant submits the questionnaire.
+ 
+    1. Stores q_data in sess["questionnaire"] (in-memory, for /results page).
+    2. Updates the per-session summary JSON (adds "questionnaire" key).
+    3. Appends one row to the master questionnaire CSV so all participants'
+       responses are in one file ready for analysis (Excel / SPSS / R / Python).
+    """
+    sess = sessions.get(session_id)
+    if not sess:
+        return
+ 
+    sess["questionnaire"] = q_data
+    os.makedirs(DATA_DIR, exist_ok=True)
+    pid  = sess["participant_id"]
+    cond = sess["condition"]
+ 
+    # ── 1. Update per-session summary JSON ────────────────────────────
+    sum_path = os.path.join(DATA_DIR, f"{pid}_{cond}_summary.json")
+    if os.path.exists(sum_path):
+        with open(sum_path) as f:
+            summary = json.load(f)
+        summary["questionnaire"] = q_data
+        with open(sum_path, "w") as f:
+            json.dump(summary, f, indent=2)
+    else:
+        # Session file doesn't exist yet — create it now including questionnaire
+        summary, _, _ = _save_session(session_id)
+        if summary:
+            summary["questionnaire"] = q_data
+            with open(sum_path, "w") as f:
+                json.dump(summary, f, indent=2)
+ 
+    # ── 2. Append row to master questionnaire CSV ─────────────────────
+    elapsed = (sess.get("end_time") or time.time()) - sess["start_time"]
+    lats    = sess["latencies"]
+ 
+    row = {
+        "participant_id":     pid,
+        "condition":          cond,
+        "age":                sess.get("age"),
+        "gender":             sess.get("gender"),
+        "session_duration_s": round(elapsed, 1),
+        "total_alerts":       sess["n_alerts"],
+        "ignored_alerts":     sess["n_ignored"],
+        "avg_latency_s":      round(sum(lats) / len(lats), 2) if lats else None,
+        "median_latency_s":   round(float(np.median(lats)), 2) if lats else None,
+        "pct_time_poor_posture":           round(sess["total_poor_s"] / elapsed * 100, 1)
+                              if elapsed > 0 else 0,
+        "final_delay":        sess["delay"],
+        # Likert items (all expected to be present; default to None if missing)
+        "helpfulness_aware":       q_data.get("helpfulness_aware"),
+        "helpfulness_useful":      q_data.get("helpfulness_useful"),
+        "helpfulness_motivated":   q_data.get("helpfulness_motivated"),
+        "annoyance_disruptive":    q_data.get("annoyance_disruptive"),
+        "annoyance_frequency":     q_data.get("annoyance_frequency"),
+        "annoyance_ignored":       q_data.get("annoyance_ignored"),
+        "usability_easy":          q_data.get("usability_easy"),
+        "usability_clear":         q_data.get("usability_clear"),
+        "usability_comfort":       q_data.get("usability_comfort"),
+        "willingness_daily":       q_data.get("willingness_daily"),
+        "willingness_recommend":   q_data.get("willingness_recommend"),
+        "willingness_timing":      q_data.get("willingness_timing"),
+        # Subscale averages computed by the JS before POST
+        "score_helpfulness":  q_data.get("score_helpfulness"),
+        "score_annoyance":    q_data.get("score_annoyance"),
+        "score_usability":    q_data.get("score_usability"),
+        "score_willingness":  q_data.get("score_willingness"),
+        # Open-ended
+        "open_helpful":  q_data.get("open_helpful", ""),
+        "open_improve":  q_data.get("open_improve", ""),
+        "open_other":    q_data.get("open_other",   ""),
+        "submitted_at":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+ 
+    file_exists = os.path.exists(QUESTIONNAIRE_MASTER_CSV)
+    with open(QUESTIONNAIRE_MASTER_CSV, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=QUESTIONNAIRE_FIELDS)
+        if not file_exists:
+            writer.writeheader()   # write header only on first participant
+        writer.writerow(row)
 
 # ╔══════════════════════════════════════════════════════════════════════════════
 # ║  ROUTES
@@ -710,17 +831,21 @@ def api_stop(session_id):
 
 @app.route("/api/submit_questionnaire/<session_id>", methods=["POST"])
 def api_questionnaire(session_id):
+    """
+    Receives the questionnaire payload from questionnaire.html and persists it.
+    Returns JSON so the frontend can redirect to /results.
+    """
     sess = sessions.get(session_id)
     if not sess:
-        return jsonify({"error": "not found"}), 404
-    data = request.json
-    sess["questionnaire"] = data
-    summary, _, sp = _save_session(session_id)
-    summary["questionnaire"] = data
-    with open(sp, "w") as f:
-        json.dump(summary, f, indent=2)
-    return jsonify({"status": "saved"})
-
+        return jsonify({"error": "session not found"}), 404
+ 
+    q_data = request.json
+    if not q_data:
+        return jsonify({"error": "empty payload"}), 400
+ 
+    _save_questionnaire(session_id, q_data)
+ 
+    return jsonify({"status": "saved", "redirect": f"/results/{session_id}"})
 
 @app.route("/api/export/<session_id>")
 def api_export(session_id):
